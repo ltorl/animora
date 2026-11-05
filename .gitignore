@@ -2,8 +2,8 @@ __pycache__/
 *.pyc
 *.egg-info/
 animora/native/build/
-render/
-turntable/
+/render/
+/turntable/
 *.cache.npz
 .DS_Store
 build/
