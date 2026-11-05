@@ -60,15 +60,18 @@ command -v ffmpeg >/dev/null 2>&1 || warn "ffmpeg not found: image sequences wor
 TMP="$(mktemp -d 2>/dev/null || mktemp -d -t animora)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
-URL="https://codeload.github.com/$REPO/tar.gz/$REF"
+fetch() {
+    if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then wget -qO "$2" "$1"
+    else die "curl or wget is required."; fi
+}
 say "Downloading Animora ($REF)"
-if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$URL" -o "$TMP/src.tar.gz" || die "download failed: $URL"
-elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$TMP/src.tar.gz" "$URL" || die "download failed: $URL"
-else
-    die "curl or wget is required."
-fi
+# Full ref names avoid stale cached archives for short names; try branch, then tag, then commit.
+OK=""
+for R in "refs/heads/$REF" "refs/tags/$REF" "$REF"; do
+    if fetch "https://codeload.github.com/$REPO/tar.gz/$R" "$TMP/src.tar.gz"; then OK=1; break; fi
+done
+[ -n "$OK" ] || die "download failed: could not find '$REF' in github.com/$REPO"
 mkdir -p "$TMP/src"
 tar -xzf "$TMP/src.tar.gz" -C "$TMP/src" --strip-components=1 || die "could not unpack the archive."
 
