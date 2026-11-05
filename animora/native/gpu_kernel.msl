@@ -1,0 +1,1483 @@
+R"MSL(
+// Animora GPU path tracer (Metal Shading Language).
+// A faithful port of the CPU integrator in pathtracer.cpp (same BSDF, light sampling, MIS,
+// sampler, fog, SSS random walk, motion blur and camera model).  Volumes are CPU-only.
+#include <metal_stdlib>
+using namespace metal;
+
+#define PI 3.14159265358979323846f
+#define INV_PI 0.31830988618379067f
+#define INF 1e30f
+
+struct AnTexture {
+  int type, width, height, channels;
+  int offset, space, wrap, interp;
+  float color1[3]; float color2[3]; float scale; float params[6];
+  float uv_scale[2]; float uv_offset[2]; float uv_rotation; float pad;
+};
+struct AnMaterial {
+  float base_color[3]; float metallic;
+  float roughness, ior, transmission, specular;
+  float specular_tint, clearcoat, clearcoat_roughness, sheen;
+  float sheen_tint, subsurface; float subsurface_radius[3]; float subsurface_scale;
+  float emission[3]; float emission_strength;
+  float alpha, normal_strength, bump_strength, transmission_roughness;
+  float attenuation_color[3]; float attenuation_distance;
+  int tex_base_color, tex_roughness, tex_metallic, tex_normal;
+  int tex_emission, tex_alpha, tex_bump, tex_transmission;
+  int thin_walled, emission_one_sided, shadow_catcher, flags;
+};
+struct AnLight {
+  int type, visible, cast_shadows, pad0;
+  float position[3]; float radius; float direction[3]; float angle;
+  float color[3]; float intensity; float blend; float pad1[3];
+};
+struct AnCamera {
+  float pos0[3], fwd0[3], up0[3], pos1[3], fwd1[3], up1[3];
+  float fov_y; int projection; float ortho_height, aperture_radius, focus_distance;
+  int blades; float blade_rotation, shift_x, shift_y, near_clip;
+};
+struct BVHNode { float lo[3]; int left_first; float hi[3]; int count; };
+
+struct Params {
+  int width, height, max_depth, integrator;
+  int caustics, rr_depth, primary_only, pass_spp;
+  float clamp_indirect, ao_distance, wire_width, filter_sigma;
+  uint seed; int rx0, ry0, rw;
+  int rh, num_tris, motion, cam_motion;
+  int has_N0, has_N1, has_UV, has_PREF;
+  int has_tri_mat, num_materials, num_textures, num_lights;
+  int env_tex, env_visible, num_entries, env_entry;
+  int env_w, env_h, env_valid, has_texdata;
+  float env_strength, env_rotation, env_integral, scene_radius;
+  float env_bg[3]; float fog_density;
+  float fog_color[3]; float fog_anisotropy;
+  float fog_height_min, fog_height_max, pad_a, pad_b;
+  AnCamera camera;
+};
+
+struct Ctx {
+  constant Params *P;
+  device const BVHNode *nodes; device const int *idx;
+  device const float *P0; device const float *P1; device const float *N0; device const float *N1;
+  device const float *UV; device const float *PREF; device const int *tri_mat; device const uchar *tri_opaque;
+  device const AnMaterial *mats; device const AnTexture *texs; device const float *texdata;
+  device const AnLight *lights; device const int2 *entries; device const float *light_cdf;
+  device const float *light_prob; device const int *tri_light;
+  device const float *env_func; device const float *env_cond; device const float *env_marg;
+  device const int *perm;
+};
+
+// ------------------------------------------------------------------ math
+static inline float3 nrm(float3 a) { float l = length(a); return l > 0 ? a / l : float3(0, 0, 1); }
+static inline float maxc(float3 a) { return max(a.x, max(a.y, a.z)); }
+static inline float lum(float3 a) { return 0.2126f * a.x + 0.7152f * a.y + 0.0722f * a.z; }
+static inline float sat(float v) { return clamp(v, 0.f, 1.f); }
+static inline float sqr(float x) { return x * x; }
+static inline float3 refl(float3 v, float3 n) { return v - n * (2.f * dot(v, n)); }
+static inline bool fin3(float3 v) { return isfinite(v.x) && isfinite(v.y) && isfinite(v.z); }
+static inline float smoothstepf(float a, float b, float x) {
+  if (b <= a) return x >= b ? 1.f : 0.f;
+  float t = sat((x - a) / (b - a));
+  return t * t * (3 - 2 * t);
+}
+static inline float3 V(const device float *p) { return float3(p[0], p[1], p[2]); }
+static inline float3 Vc(const constant float *p) { return float3(p[0], p[1], p[2]); }
+
+struct Frame { float3 t, b, n; };
+static inline Frame frame1(float3 n) {
+  Frame f; f.n = n;
+  float sign = copysign(1.0f, n.z);
+  float a = -1.0f / (sign + n.z);
+  float bb = n.x * n.y * a;
+  f.t = float3(1.0f + sign * n.x * n.x * a, sign * bb, -sign * n.x);
+  f.b = float3(bb, sign + n.y * n.y * a, -n.y);
+  return f;
+}
+static inline Frame frame2(float3 n, float3 tangent) {
+  float3 tt = tangent - n * dot(n, tangent);
+  float l = length(tt);
+  if (l < 1e-6f) return frame1(n);
+  Frame f; f.n = n; f.t = tt / l; f.b = cross(n, f.t);
+  return f;
+}
+static inline float3 to_local(thread const Frame &f, float3 v) { return float3(dot(v, f.t), dot(v, f.b), dot(v, f.n)); }
+static inline float3 to_world(thread const Frame &f, float3 v) { return f.t * v.x + f.b * v.y + f.n * v.z; }
+
+static inline float offs1(float p, float n) {
+  int o = (int)(256.0f * n);
+  float pi = as_type<float>(as_type<int>(p) + ((p < 0) ? -o : o));
+  return fabs(p) < (1.0f / 32.0f) ? p + (1.0f / 65536.0f) * n : pi;
+}
+static inline float3 offset_ray(float3 p, float3 n) { return float3(offs1(p.x, n.x), offs1(p.y, n.y), offs1(p.z, n.z)); }
+
+static inline uint hash_u32(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
+static inline uint hash_combine(uint seed, uint v) { return hash_u32(seed ^ (v + 0x9e3779b9u + (seed << 6) + (seed >> 2))); }
+static inline uint lk_perm(uint x, uint seed) {
+  x += seed; x ^= x * 0x6c50b47cu; x ^= x * 0xb82f1e52u; x ^= x * 0xc7afe638u; x ^= x * 0x8d22f6e6u; return x;
+}
+static inline uint nus(uint x, uint seed) { return reverse_bits(lk_perm(reverse_bits(x), seed)); }
+static inline uint sobol1(uint i) {
+  uint r = 0;
+  for (uint v = 1u << 31; i; i >>= 1, v ^= v >> 1) if (i & 1) r ^= v;
+  return r;
+}
+static inline float u2f(uint x) { return min((float)(x >> 8) * (1.0f / 16777216.0f), 0.99999994f); }
+
+struct Sampler { uint seed, index, dim; };
+static inline float2 get2(thread Sampler &s) {
+  uint h = hash_combine(s.seed, s.dim++);
+  uint i = nus(s.index, h);
+  return float2(u2f(nus(reverse_bits(i), hash_u32(h ^ 0xa511e9b3u))), u2f(nus(sobol1(i), hash_u32(h ^ 0x63d83595u))));
+}
+static inline float get1(thread Sampler &s) { return get2(s).x; }
+
+struct PCG { ulong state; };
+static inline PCG pcg_make(ulong s) { PCG p; p.state = s * 6364136223846793005UL + 1442695040888963407UL; return p; }
+static inline float uni(thread PCG &p) {
+  ulong old = p.state;
+  p.state = old * 6364136223846793005UL + 1442695040888963407UL;
+  uint xs = (uint)(((old >> 18u) ^ old) >> 27u);
+  uint rot = (uint)(old >> 59u);
+  return u2f((xs >> rot) | (xs << ((-rot) & 31u)));
+}
+
+static inline float3 cosine_hemisphere(float u1, float u2) {
+  float r = sqrt(u1), phi = 2 * PI * u2;
+  return float3(r * cos(phi), r * sin(phi), sqrt(max(0.f, 1 - u1)));
+}
+static inline float3 uniform_sphere(float u1, float u2) {
+  float z = 1 - 2 * u1, r = sqrt(max(0.f, 1 - z * z)), phi = 2 * PI * u2;
+  return float3(r * cos(phi), r * sin(phi), z);
+}
+static inline float3 uniform_cone(float u1, float u2, float cmax) {
+  float c = 1 - u1 * (1 - cmax), s = sqrt(max(0.f, 1 - c * c)), phi = 2 * PI * u2;
+  return float3(s * cos(phi), s * sin(phi), c);
+}
+static inline float2 concentric_disk(float u1, float u2) {
+  float a = 2 * u1 - 1, b = 2 * u2 - 1;
+  if (a == 0 && b == 0) return float2(0);
+  float r, phi;
+  if (fabs(a) > fabs(b)) { r = a; phi = (PI / 4) * (b / a); }
+  else { r = b; phi = (PI / 2) - (PI / 4) * (a / b); }
+  return float2(r * cos(phi), r * sin(phi));
+}
+static inline float power_heuristic(float a, float b) {
+  float a2 = a * a, b2 = b * b;
+  if (!(a2 + b2 > 0)) return 0;
+  if (isinf(a2)) return 1;
+  return a2 / (a2 + b2);
+}
+
+// ------------------------------------------------------------------ noise
+static inline float fade(float t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+static inline float grad3(int h, float x, float y, float z) {
+  int hh = h & 15;
+  float u = hh < 8 ? x : y;
+  float v = hh < 4 ? y : ((hh == 12 || hh == 14) ? x : z);
+  return ((hh & 1) ? -u : u) + ((hh & 2) ? -v : v);
+}
+static float perlin(thread const Ctx &C, float3 q) {
+  device const int *p = C.perm;
+  float fx = floor(q.x), fy = floor(q.y), fz = floor(q.z);
+  int X = ((int)fx) & 255, Y = ((int)fy) & 255, Z = ((int)fz) & 255;
+  float x = q.x - fx, y = q.y - fy, z = q.z - fz;
+  float u = fade(x), v = fade(y), w = fade(z);
+  int A = p[X] + Y, AA = p[A] + Z, AB = p[A + 1] + Z, B = p[X + 1] + Y, BA = p[B] + Z, BB = p[B + 1] + Z;
+  return mix(mix(mix(grad3(p[AA], x, y, z), grad3(p[BA], x - 1, y, z), u),
+                 mix(grad3(p[AB], x, y - 1, z), grad3(p[BB], x - 1, y - 1, z), u), v),
+             mix(mix(grad3(p[AA + 1], x, y, z - 1), grad3(p[BA + 1], x - 1, y, z - 1), u),
+                 mix(grad3(p[AB + 1], x, y - 1, z - 1), grad3(p[BB + 1], x - 1, y - 1, z - 1), u), v),
+             w);
+}
+static float fbm(thread const Ctx &C, float3 q, int octaves, float gain, float lacunarity) {
+  float sum = 0, amp = 1, norm = 0;
+  octaves = max(1, min(octaves, 12));
+  for (int i = 0; i < octaves; ++i) {
+    sum += amp * perlin(C, q); norm += amp; amp *= gain;
+    q = q * lacunarity + float3(17.13f, 3.71f, 9.27f);
+  }
+  return sum / norm;
+}
+static inline float hash3f(int x, int y, int z, int k) {
+  uint h = hash_combine(hash_combine(hash_combine((uint)x * 73856093u, (uint)y * 19349663u), (uint)z * 83492791u), (uint)k);
+  return (h >> 8) * (1.0f / 16777216.0f);
+}
+
+// ------------------------------------------------------------------ geometry
+struct Ray { float3 o, d; float time; };
+struct Hit { float t; int tri; float u, v; };
+struct Surface { float3 p, ng, ns, dpdu, dpdv, orco; float u, v; int tri, mat; bool front; float area; };
+
+static inline void tri_verts(thread const Ctx &C, int i, float time, thread float3 &a, thread float3 &b, thread float3 &c) {
+  device const float *p = C.P0 + (size_t)i * 9;
+  a = V(p); b = V(p + 3); c = V(p + 6);
+  if (C.P->motion) {
+    device const float *q = C.P1 + (size_t)i * 9;
+    a = mix(a, V(q), time); b = mix(b, V(q + 3), time); c = mix(c, V(q + 6), time);
+  }
+}
+static inline int mat_index(thread const Ctx &C, int tri) {
+  int m = C.P->has_tri_mat ? C.tri_mat[tri] : 0;
+  return (m < 0 || m >= C.P->num_materials) ? C.P->num_materials : m;
+}
+static inline float box_hit(device const BVHNode &n, float3 o, float3 inv, float tmax) {
+  float tx1 = (n.lo[0] - o.x) * inv.x, tx2 = (n.hi[0] - o.x) * inv.x;
+  float tmin = min(tx1, tx2), tmx = max(tx1, tx2);
+  float ty1 = (n.lo[1] - o.y) * inv.y, ty2 = (n.hi[1] - o.y) * inv.y;
+  tmin = max(tmin, min(ty1, ty2)); tmx = min(tmx, max(ty1, ty2));
+  float tz1 = (n.lo[2] - o.z) * inv.z, tz2 = (n.hi[2] - o.z) * inv.z;
+  tmin = max(tmin, min(tz1, tz2)); tmx = min(tmx, max(tz1, tz2));
+  if (tmx >= max(tmin, 0.f) && tmin < tmax) return max(tmin, 0.f);
+  return INF;
+}
+static inline bool tri_hit(thread const Ctx &C, int t, thread const Ray &r, float tmax, thread float &th, thread float &u, thread float &v) {
+  float3 a, b, c;
+  tri_verts(C, t, r.time, a, b, c);
+  float3 e1 = b - a, e2 = c - a;
+  float3 p = cross(r.d, e2);
+  float det = dot(e1, p);
+  if (fabs(det) < 1e-14f) return false;
+  float inv = 1.f / det;
+  float3 s = r.o - a;
+  u = dot(s, p) * inv;
+  if (u < 0.f || u > 1.f) return false;
+  float3 q = cross(s, e1);
+  v = dot(r.d, q) * inv;
+  if (v < 0.f || u + v > 1.f) return false;
+  th = dot(e2, q) * inv;
+  return th > 0.f && th < tmax;
+}
+static bool intersect(thread const Ctx &C, thread const Ray &r, float tmax, thread Hit &h) {
+  h.t = tmax; h.tri = -1;
+  if (C.P->num_tris == 0) return false;
+  float3 inv = 1.f / r.d;
+  int stack[96]; int sp = 0;
+  if (box_hit(C.nodes[0], r.o, inv, tmax) >= INF) return false;
+  int ni = 0;
+  for (;;) {
+    device const BVHNode &n = C.nodes[ni];
+    if (n.count > 0) {
+      for (int i = 0; i < n.count; ++i) {
+        int t = C.idx[n.left_first + i];
+        float th, u, v;
+        if (tri_hit(C, t, r, h.t, th, u, v)) { h.t = th; h.tri = t; h.u = u; h.v = v; }
+      }
+      if (sp == 0) break;
+      ni = stack[--sp];
+      continue;
+    }
+    int c0 = n.left_first, c1 = c0 + 1;
+    float d0 = box_hit(C.nodes[c0], r.o, inv, h.t), d1 = box_hit(C.nodes[c1], r.o, inv, h.t);
+    if (d0 > d1) { float tf = d0; d0 = d1; d1 = tf; int ti = c0; c0 = c1; c1 = ti; }
+    if (d0 >= INF) { if (sp == 0) break; ni = stack[--sp]; continue; }
+    ni = c0;
+    if (d1 < INF && sp < 96) stack[sp++] = c1;
+  }
+  return h.tri >= 0;
+}
+static int occluded_any(thread const Ctx &C, thread const Ray &r, float tmax) {
+  if (C.P->num_tris == 0) return 0;
+  float3 inv = 1.f / r.d;
+  int stack[96]; int sp = 0;
+  if (box_hit(C.nodes[0], r.o, inv, tmax) >= INF) return 0;
+  int ni = 0;
+  bool transparent = false;
+  for (;;) {
+    device const BVHNode &n = C.nodes[ni];
+    if (n.count > 0) {
+      for (int i = 0; i < n.count; ++i) {
+        int t = C.idx[n.left_first + i];
+        float th, u, v;
+        if (tri_hit(C, t, r, tmax, th, u, v)) {
+          if (C.tri_opaque[t] == 1) return 1;
+          if (C.tri_opaque[t] == 0) transparent = true;
+        }
+      }
+      if (sp == 0) break;
+      ni = stack[--sp];
+      continue;
+    }
+    int c0 = n.left_first, c1 = c0 + 1;
+    float d0 = box_hit(C.nodes[c0], r.o, inv, tmax), d1 = box_hit(C.nodes[c1], r.o, inv, tmax);
+    if (d0 < INF && d1 < INF) { ni = c0; if (sp < 96) stack[sp++] = c1; }
+    else if (d0 < INF) ni = c0;
+    else if (d1 < INF) ni = c1;
+    else { if (sp == 0) break; ni = stack[--sp]; }
+  }
+  return transparent ? 2 : 0;
+}
+
+static Surface surface(thread const Ctx &C, thread const Hit &h, thread const Ray &r) {
+  Surface s;
+  int t = h.tri;
+  s.tri = t;
+  float3 a, b, c;
+  tri_verts(C, t, r.time, a, b, c);
+  float w = 1 - h.u - h.v;
+  s.p = a * w + b * h.u + c * h.v;
+  float3 e1 = b - a, e2 = c - a;
+  float3 n = cross(e1, e2);
+  float nl = length(n);
+  s.area = 0.5f * nl;
+  s.ng = nl > 0 ? n / nl : float3(0, 0, 1);
+  s.front = dot(r.d, s.ng) < 0;
+  if (C.P->has_N0) {
+    device const float *q = C.N0 + (size_t)t * 9;
+    float3 n0 = V(q), n1 = V(q + 3), n2 = V(q + 6);
+    if (C.P->motion && C.P->has_N1) {
+      device const float *q1 = C.N1 + (size_t)t * 9;
+      n0 = mix(n0, V(q1), r.time); n1 = mix(n1, V(q1 + 3), r.time); n2 = mix(n2, V(q1 + 6), r.time);
+    }
+    if (dot(n0 + n1 + n2, s.ng) < 0) { s.ng = -s.ng; s.front = !s.front; }
+    float3 ns = n0 * w + n1 * h.u + n2 * h.v;
+    float l = length(ns);
+    s.ns = l > 1e-8f ? ns / l : s.ng;
+  } else {
+    s.ns = s.ng;
+  }
+  float u0 = 0, v0 = 0, u1 = 1, v1 = 0, u2 = 0, v2 = 1;
+  if (C.P->has_UV) {
+    device const float *q = C.UV + (size_t)t * 6;
+    u0 = q[0]; v0 = q[1]; u1 = q[2]; v1 = q[3]; u2 = q[4]; v2 = q[5];
+  }
+  s.u = u0 * w + u1 * h.u + u2 * h.v;
+  s.v = v0 * w + v1 * h.u + v2 * h.v;
+  float du1 = u1 - u0, du2 = u2 - u0, dv1 = v1 - v0, dv2 = v2 - v0;
+  float det = du1 * dv2 - dv1 * du2;
+  if (fabs(det) > 1e-12f) {
+    float inv = 1.f / det;
+    s.dpdu = (e1 * dv2 - e2 * dv1) * inv;
+    s.dpdv = (e2 * du1 - e1 * du2) * inv;
+  } else {
+    Frame f = frame1(s.ng);
+    s.dpdu = f.t; s.dpdv = f.b;
+  }
+  if (C.P->has_PREF) {
+    device const float *q = C.PREF + (size_t)t * 9;
+    s.orco = V(q) * w + V(q + 3) * h.u + V(q + 6) * h.v;
+  } else {
+    s.orco = s.p;
+  }
+  s.mat = C.P->has_tri_mat ? C.tri_mat[t] : 0;
+  return s;
+}
+
+// ------------------------------------------------------------------ textures
+static inline float3 tex_fetch(thread const Ctx &C, device const AnTexture &t, int x, int y) {
+  int W = t.width, H = t.height, Ch = max(1, t.channels);
+  if (t.wrap == 0) { x %= W; if (x < 0) x += W; y %= H; if (y < 0) y += H; }
+  else { x = max(0, min(W - 1, x)); y = max(0, min(H - 1, y)); }
+  device const float *px = C.texdata + t.offset + ((size_t)y * W + x) * Ch;
+  if (Ch >= 3) return float3(px[0], px[1], px[2]);
+  return float3(px[0]);
+}
+static float3 image_lookup(thread const Ctx &C, device const AnTexture &t, float u, float v) {
+  if (!C.P->has_texdata || t.width <= 0 || t.height <= 0) return float3(1);
+  int W = t.width, H = t.height;
+  if (t.interp == 1) return tex_fetch(C, t, (int)floor(u * W), (int)floor((1.f - v) * H));
+  float fx = u * W - 0.5f, fy = (1.f - v) * H - 0.5f;
+  int x0 = (int)floor(fx), y0 = (int)floor(fy);
+  float ax = fx - x0, ay = fy - y0;
+  return mix(mix(tex_fetch(C, t, x0, y0), tex_fetch(C, t, x0 + 1, y0), ax),
+             mix(tex_fetch(C, t, x0, y0 + 1), tex_fetch(C, t, x0 + 1, y0 + 1), ax), ay);
+}
+static float image_alpha(thread const Ctx &C, device const AnTexture &t, float u, float v) {
+  if (!C.P->has_texdata || t.channels < 4) return 1.f;
+  int W = t.width, H = t.height;
+  int x = (int)floor(u * W), y = (int)floor((1.f - v) * H);
+  x %= W; if (x < 0) x += W; y %= H; if (y < 0) y += H;
+  return C.texdata[t.offset + ((size_t)y * W + x) * 4 + 3];
+}
+
+static float3 eval_tex(thread const Ctx &C, int ti, float u, float v, float3 orco, float3 pw, thread float *alpha_out) {
+  if (ti < 0 || ti >= C.P->num_textures) return float3(1);
+  device const AnTexture &t = C.texs[ti];
+  float uu, vv; float3 q;
+  if (t.space == 0) {
+    float su = u * t.uv_scale[0], sv = v * t.uv_scale[1];
+    if (t.uv_rotation != 0) {
+      float c = cos(t.uv_rotation), s = sin(t.uv_rotation);
+      float ru = su * c - sv * s, rv = su * s + sv * c;
+      su = ru; sv = rv;
+    }
+    uu = su + t.uv_offset[0]; vv = sv + t.uv_offset[1];
+    q = float3(uu, vv, 0);
+  } else {
+    q = (t.space == 1 ? orco : pw);
+    uu = q.x; vv = q.y;
+  }
+  float3 c1 = float3(t.color1[0], t.color1[1], t.color1[2]), c2 = float3(t.color2[0], t.color2[1], t.color2[2]);
+  float sc = t.scale;
+  float f = 0;
+  switch (t.type) {
+    case 0:
+      if (alpha_out) *alpha_out = image_alpha(C, t, uu, vv);
+      return image_lookup(C, t, uu, vv);
+    case 10: return c1;
+    case 1: {
+      float3 p = q * sc;
+      int k = (int)floor(p.x) + (int)floor(p.y) + (t.space == 0 ? 0 : (int)floor(p.z));
+      f = (k & 1) ? 1.f : 0.f;
+      break;
+    }
+    case 2: {
+      float3 p = q * sc;
+      if (t.params[2] > 0) p = p + float3(perlin(C, p + float3(5.2f, 1.3f, 7.7f)), perlin(C, p + float3(1.7f, 9.2f, 3.1f)), perlin(C, p + float3(8.3f, 2.8f, 4.4f))) * t.params[2];
+      float n = fbm(C, p, (int)(t.params[0] > 0 ? t.params[0] : 5), t.params[1] > 0 ? t.params[1] : 0.5f, 2.0f);
+      float contrast = t.params[3] > 0 ? t.params[3] : 1.f;
+      f = sat(0.5f + 0.9f * n * contrast);
+      break;
+    }
+    case 3: {
+      float3 p = q * sc;
+      float turb = fbm(C, p, (int)(t.params[0] > 0 ? t.params[0] : 6), 0.55f, 2.0f);
+      float d = t.params[2] > 0 ? t.params[2] : 5.f;
+      f = 0.5f + 0.5f * sin(p.x * 2.f + d * turb);
+      f = pow(sat(f), t.params[1] > 0 ? t.params[1] : 1.f);
+      break;
+    }
+    case 4: {
+      float3 p = q * sc;
+      float r = sqrt(p.x * p.x + p.z * p.z) * (t.params[0] > 0 ? t.params[0] : 8.f);
+      r += (t.params[2] > 0 ? t.params[2] : 1.5f) * fbm(C, p * 0.8f, 4, 0.5f, 2.0f) + 0.15f * perlin(C, float3(p.x, p.y * 20.f, p.z));
+      float ring = r - floor(r);
+      f = smoothstepf(0.0f, 0.8f, ring) * (1 - smoothstepf(0.8f, 1.0f, ring));
+      break;
+    }
+    case 5: {
+      float lw = t.params[0] > 0 ? t.params[0] : 0.05f;
+      float gx = q.x * sc, gy = q.y * sc;
+      float fx = gx - floor(gx), fy = gy - floor(gy);
+      bool line = fx < lw || fy < lw;
+      if (t.space != 0) { float gz = q.z * sc; float fz = gz - floor(gz); line = ((int)(fx < lw) + (int)(fy < lw) + (int)(fz < lw)) >= 2; }
+      f = line ? 1.f : 0.f;
+      break;
+    }
+    case 6: {
+      int axis = (int)t.params[0];
+      float val = (axis == 0 ? q.x : (axis == 1 ? q.y : q.z)) * sc;
+      if (t.space == 0 && axis == 2) val = vv * sc;
+      float lo = t.params[1], hi = t.params[2] != 0 ? t.params[2] : 1.f;
+      f = sat((val - lo) / (hi - lo));
+      f = f * f * (3 - 2 * f);
+      break;
+    }
+    case 7: {
+      float3 p = q * sc;
+      int ix = (int)floor(p.x), iy = (int)floor(p.y), iz = (int)floor(p.z);
+      float best = INF, second = INF; int bx = 0, by = 0, bz = 0;
+      int zr = t.space == 0 ? 0 : 1;
+      for (int dz = -zr; dz <= zr; ++dz)
+        for (int dy = -1; dy <= 1; ++dy)
+          for (int dx = -1; dx <= 1; ++dx) {
+            int cx = ix + dx, cy = iy + dy, cz = iz + dz;
+            float3 fp = float3(cx + hash3f(cx, cy, cz, 1), cy + hash3f(cx, cy, cz, 2), t.space == 0 ? p.z : cz + hash3f(cx, cy, cz, 3));
+            float d = length(fp - p);
+            if (d < best) { second = best; best = d; bx = cx; by = cy; bz = cz; }
+            else if (d < second) second = d;
+          }
+      int mode = (int)t.params[0];
+      if (mode == 0) f = hash3f(bx, by, bz, 7);
+      else if (mode == 1) f = sat(best);
+      else f = sat((second - best) * (t.params[1] > 0 ? t.params[1] : 4.f));
+      break;
+    }
+    case 8: {
+      float mortar = t.params[0] > 0 ? t.params[0] : 0.03f;
+      float ratio = t.params[1] > 0 ? t.params[1] : 2.f;
+      float bx = q.x * sc / ratio, by = q.y * sc;
+      float row = floor(by);
+      if (((int)row) & 1) bx += 0.5f;
+      float col = floor(bx);
+      float fx = bx - col, fy = by - row;
+      bool m = fx < mortar / ratio || fy < mortar || fx > 1 - mortar / ratio || fy > 1 - mortar;
+      if (m) return c2;
+      float var = t.params[2];
+      float hsh = hash3f((int)col, (int)row, 0, 11);
+      return c1 * (1.f - var * 0.5f + var * hsh);
+    }
+    case 9: {
+      int axis = (int)t.params[0];
+      float val = (axis == 0 ? q.x : (axis == 1 ? q.y : q.z)) * sc;
+      float soft = t.params[1];
+      float s = 0.5f + 0.5f * sin(val * 2 * PI);
+      f = soft > 0 ? smoothstepf(0.5f - soft, 0.5f + soft, s) : (s > 0.5f ? 1.f : 0.f);
+      break;
+    }
+    default: return float3(1);
+  }
+  return mix(c1, c2, f);
+}
+static inline float eval_tex_scalar(thread const Ctx &C, int ti, float u, float v, float3 orco, float3 pw) {
+  float3 c = eval_tex(C, ti, u, v, orco, pw, nullptr);
+  return (c.x + c.y + c.z) * (1.f / 3.f);
+}
+
+// ------------------------------------------------------------------ materials
+struct MatEval {
+  float3 base;
+  float metallic, roughness, ior, transmission, specular, spec_tint, clearcoat, cc_rough, sheen, sheen_tint, subsurface;
+  float trans_rough;
+  float3 sss_radius, emission;
+  float alpha;
+  bool thin;
+  float3 atten_sigma;
+  bool has_atten, one_sided, shadow_catcher;
+};
+static inline int smat(thread const Ctx &C, int m) { return (m >= 0 && m < C.P->num_materials) ? m : C.P->num_materials; }
+
+static MatEval eval_material(thread const Ctx &C, thread const Surface &s) {
+  device const AnMaterial &M = C.mats[smat(C, s.mat)];
+  MatEval m;
+  m.base = float3(M.base_color[0], M.base_color[1], M.base_color[2]);
+  m.alpha = M.alpha;
+  if (M.tex_base_color >= 0) {
+    float a = 1.f;
+    m.base = m.base * eval_tex(C, M.tex_base_color, s.u, s.v, s.orco, s.p, &a);
+    if (M.tex_alpha < 0) m.alpha *= a;
+  }
+  m.metallic = M.metallic;
+  if (M.tex_metallic >= 0) m.metallic *= eval_tex_scalar(C, M.tex_metallic, s.u, s.v, s.orco, s.p);
+  m.roughness = M.roughness;
+  if (M.tex_roughness >= 0) m.roughness *= eval_tex_scalar(C, M.tex_roughness, s.u, s.v, s.orco, s.p);
+  m.transmission = M.transmission;
+  if (M.tex_transmission >= 0) m.transmission *= eval_tex_scalar(C, M.tex_transmission, s.u, s.v, s.orco, s.p);
+  if (M.tex_alpha >= 0) m.alpha *= eval_tex_scalar(C, M.tex_alpha, s.u, s.v, s.orco, s.p);
+  m.ior = M.ior > 1.0001f ? M.ior : 1.0001f;
+  m.specular = M.specular; m.spec_tint = M.specular_tint; m.clearcoat = M.clearcoat;
+  m.cc_rough = M.clearcoat_roughness; m.sheen = M.sheen; m.sheen_tint = M.sheen_tint; m.subsurface = M.subsurface;
+  m.sss_radius = float3(M.subsurface_radius[0], M.subsurface_radius[1], M.subsurface_radius[2]) * max(1e-6f, M.subsurface_scale);
+  m.trans_rough = M.transmission_roughness >= 0 ? M.transmission_roughness : m.roughness;
+  m.emission = float3(M.emission[0], M.emission[1], M.emission[2]) * M.emission_strength;
+  if (M.tex_emission >= 0 && M.emission_strength > 0) m.emission = m.emission * eval_tex(C, M.tex_emission, s.u, s.v, s.orco, s.p, nullptr);
+  m.thin = M.thin_walled != 0;
+  m.one_sided = M.emission_one_sided != 0;
+  m.shadow_catcher = M.shadow_catcher != 0;
+  m.has_atten = M.attenuation_distance > 0 && m.transmission > 0;
+  m.atten_sigma = float3(0);
+  if (m.has_atten) {
+    float3 ac = max(float3(1e-4f), float3(M.attenuation_color[0], M.attenuation_color[1], M.attenuation_color[2]));
+    m.atten_sigma = -log(ac) / M.attenuation_distance;
+  }
+  m.metallic = sat(m.metallic); m.roughness = sat(m.roughness); m.transmission = sat(m.transmission);
+  m.subsurface = sat(m.subsurface); m.alpha = sat(m.alpha);
+  return m;
+}
+
+static void perturb_normal(thread const Ctx &C, thread Surface &s) {
+  device const AnMaterial &M = C.mats[smat(C, s.mat)];
+  if (M.tex_normal >= 0 && M.normal_strength != 0) {
+    float3 c = eval_tex(C, M.tex_normal, s.u, s.v, s.orco, s.p, nullptr);
+    float3 tn = c * 2 - 1;
+    tn.x *= M.normal_strength; tn.y *= M.normal_strength;
+    Frame f = frame2(s.ns, s.dpdu);
+    if (dot(cross(f.n, f.t), s.dpdv) < 0) f.b = -f.b;
+    float3 n = nrm(to_world(f, tn));
+    if (fin3(n)) s.ns = n;
+  }
+  if (M.tex_bump >= 0 && M.bump_strength != 0 && M.tex_bump < C.P->num_textures) {
+    device const AnTexture &t = C.texs[M.tex_bump];
+    float h0 = eval_tex_scalar(C, M.tex_bump, s.u, s.v, s.orco, s.p);
+    Frame f = frame2(s.ns, s.dpdu);
+    float hu, hv;
+    if (t.space == 0) {
+      float du = 1e-3f / max(1e-6f, fabs(t.uv_scale[0])), dv = 1e-3f / max(1e-6f, fabs(t.uv_scale[1]));
+      hu = (eval_tex_scalar(C, M.tex_bump, s.u + du, s.v, s.orco, s.p) - h0) / du;
+      hv = (eval_tex_scalar(C, M.tex_bump, s.u, s.v + dv, s.orco, s.p) - h0) / dv;
+      float lu = max(1e-6f, length(s.dpdu)), lv = max(1e-6f, length(s.dpdv));
+      hu /= lu; hv /= lv;
+      float3 n = nrm(s.ns - (nrm(s.dpdu) * hu + nrm(s.dpdv) * hv) * (M.bump_strength * 0.01f));
+      if (fin3(n)) s.ns = n;
+    } else {
+      float eps = 1e-3f / max(1e-3f, t.scale);
+      hu = (eval_tex_scalar(C, M.tex_bump, s.u, s.v, s.orco + f.t * eps, s.p + f.t * eps) - h0) / eps;
+      hv = (eval_tex_scalar(C, M.tex_bump, s.u, s.v, s.orco + f.b * eps, s.p + f.b * eps) - h0) / eps;
+      float3 n = nrm(s.ns - (f.t * hu + f.b * hv) * (M.bump_strength * 0.01f));
+      if (fin3(n)) s.ns = n;
+    }
+  }
+}
+
+// ------------------------------------------------------------------ environment + lights
+static int sample_cdf(device const float *cdf, int n, float u, thread float &frac) {
+  int lo = 0, hi = n;
+  while (lo + 1 < hi) { int mid = (lo + hi) >> 1; if (cdf[mid] <= u) lo = mid; else hi = mid; }
+  float d = cdf[lo + 1] - cdf[lo];
+  frac = d > 0 ? (u - cdf[lo]) / d : 0.5f;
+  return lo;
+}
+static inline float3 env_rot(float3 d, float ang) {
+  float c = cos(ang), s = sin(ang);
+  return float3(c * d.x + s * d.z, d.y, -s * d.x + c * d.z);
+}
+static inline float2 dir_to_uv(thread const Ctx &C, float3 dw) {
+  float3 d = env_rot(dw, -C.P->env_rotation);
+  return float2(0.5f + atan2(d.x, -d.z) * (0.5f * INV_PI), 1.f - acos(clamp(d.y, -1.f, 1.f)) * INV_PI);
+}
+static inline float3 uv_to_dir(thread const Ctx &C, float u, float v) {
+  float phi = (u - 0.5f) * 2 * PI, theta = (1.f - v) * PI, st = sin(theta);
+  return env_rot(float3(st * sin(phi), cos(theta), -st * cos(phi)), C.P->env_rotation);
+}
+static float3 env_radiance(thread const Ctx &C, float3 d) {
+  int e = C.P->env_tex;
+  if (e < 0 || e >= C.P->num_textures || C.P->env_strength <= 0) return float3(0);
+  device const AnTexture &t = C.texs[e];
+  if (t.type == 10) return float3(t.color1[0], t.color1[1], t.color1[2]) * C.P->env_strength;
+  float2 uv = dir_to_uv(C, d);
+  return image_lookup(C, t, uv.x, uv.y) * C.P->env_strength;
+}
+static float env_pdf(thread const Ctx &C, float3 d) {
+  if (!C.P->env_valid) return 1.f / (4 * PI);
+  int ew = C.P->env_w, eh = C.P->env_h;
+  float2 uv = dir_to_uv(C, d);
+  int x = min(ew - 1, max(0, (int)(uv.x * ew)));
+  int y = min(eh - 1, max(0, (int)((1.f - uv.y) * eh)));
+  float st = sin((y + 0.5f) / eh * PI);
+  if (st <= 0) return 0;
+  return C.env_func[(size_t)y * ew + x] / C.P->env_integral / (2 * PI * PI * st);
+}
+static float3 env_sample(thread const Ctx &C, float u1, float u2, thread float &pdf) {
+  if (!C.P->env_valid) { pdf = 1.f / (4 * PI); return uniform_sphere(u1, u2); }
+  int ew = C.P->env_w, eh = C.P->env_h;
+  float fy, fx;
+  int y = sample_cdf(C.env_marg, eh, u1, fy);
+  int x = sample_cdf(C.env_cond + (size_t)y * (ew + 1), ew, u2, fx);
+  float u = (x + fx) / ew, vv = 1.f - (y + fy) / eh;
+  float st = sin((y + fy) / eh * PI);
+  float pdf_uv = C.env_func[(size_t)y * ew + x] / C.P->env_integral;
+  pdf = st > 0 ? pdf_uv / (2 * PI * PI * st) : 0;
+  return uv_to_dir(C, u, vv);
+}
+
+struct LightSample { float3 wi; float dist; float3 Le; float pdf; bool delta; };
+
+static inline float spot_factor(device const AnLight &L, float3 dir_from_light) {
+  if (L.type != 1) return 1.f;
+  float3 d = nrm(float3(L.direction[0], L.direction[1], L.direction[2]));
+  float c = dot(d, dir_from_light);
+  float cos_outer = cos(L.angle);
+  float cos_inner = cos(L.angle * (1.f - sat(L.blend)));
+  return smoothstepf(cos_outer, max(cos_inner, cos_outer + 1e-4f), c);
+}
+
+static bool sample_light(thread const Ctx &C, float3 p, float time, float ul, float u1, float u2, thread LightSample &ls) {
+  int n = C.P->num_entries;
+  if (n == 0) return false;
+  float frac;
+  int li = sample_cdf(C.light_cdf, n, ul, frac);
+  float psel = C.light_prob[li];
+  if (psel <= 0) return false;
+  int2 E = C.entries[li];
+  if (E.x == 0) {
+    device const AnLight &L = C.lights[E.y];
+    float3 col = float3(L.color[0], L.color[1], L.color[2]) * L.intensity;
+    if (L.type == 2) {
+      float3 to = -nrm(float3(L.direction[0], L.direction[1], L.direction[2]));
+      if (L.angle > 1e-5f) {
+        float cmax = cos(L.angle);
+        Frame f = frame1(to);
+        ls.wi = to_world(f, uniform_cone(u1, u2, cmax));
+        ls.pdf = psel / (2 * PI * (1 - cmax));
+        ls.Le = col / (PI * sqr(sin(L.angle)));
+        ls.delta = false;
+      } else {
+        ls.wi = to; ls.pdf = psel; ls.Le = col; ls.delta = true;
+      }
+      ls.dist = INF;
+      return true;
+    }
+    float3 lp = float3(L.position[0], L.position[1], L.position[2]);
+    float3 d = lp - p;
+    float d2 = dot(d, d);
+    float dl = sqrt(d2);
+    if (dl <= 1e-6f) return false;
+    float3 to = d / dl;
+    if (L.radius > 1e-5f && dl > L.radius * 1.0001f) {
+      float sin2 = sqr(L.radius) / d2;
+      float cmax = sqrt(max(0.f, 1 - sin2));
+      Frame f = frame1(to);
+      float3 wi = to_world(f, uniform_cone(u1, u2, cmax));
+      float b = dot(wi, d);
+      float disc = b * b - (d2 - sqr(L.radius));
+      float t = b - sqrt(max(0.f, disc));
+      ls.wi = wi; ls.dist = max(0.f, t);
+      ls.pdf = psel / (2 * PI * (1 - cmax));
+      ls.Le = col / (PI * sqr(L.radius)) * spot_factor(L, -wi);
+      ls.delta = false;
+    } else {
+      ls.wi = to; ls.dist = dl; ls.pdf = psel;
+      ls.Le = col / d2 * spot_factor(L, -to);
+      ls.delta = true;
+    }
+    return maxc(ls.Le) > 0;
+  }
+  if (E.x == 1) {
+    int t = E.y;
+    float3 a, b, c;
+    tri_verts(C, t, time, a, b, c);
+    float su = sqrt(u1);
+    float b0 = 1 - su, b1 = u2 * su;
+    float3 q = a * b0 + b * b1 + c * (1 - b0 - b1);
+    float3 nr = cross(b - a, c - a);
+    float area = 0.5f * length(nr);
+    if (area <= 0) return false;
+    nr = nrm(nr);
+    float3 d = q - p;
+    float d2 = dot(d, d);
+    float dl = sqrt(d2);
+    if (dl < 1e-6f) return false;
+    ls.wi = d / dl;
+    float cosl = dot(nr, -ls.wi);
+    device const AnMaterial &m = C.mats[mat_index(C, t)];
+    if (m.emission_one_sided && cosl <= 0) return false;
+    cosl = fabs(cosl);
+    if (cosl < 1e-6f) return false;
+    ls.dist = dl;
+    ls.pdf = psel * d2 / (cosl * area);
+    float3 e = float3(m.emission[0], m.emission[1], m.emission[2]) * m.emission_strength;
+    if (m.tex_emission >= 0) {
+      float u0 = 0, v0 = 0, uu1 = 1, vv1 = 0, uu2 = 0, vv2 = 1;
+      if (C.P->has_UV) { device const float *uv = C.UV + (size_t)t * 6; u0 = uv[0]; v0 = uv[1]; uu1 = uv[2]; vv1 = uv[3]; uu2 = uv[4]; vv2 = uv[5]; }
+      float tu = u0 * b0 + uu1 * b1 + uu2 * (1 - b0 - b1), tv = v0 * b0 + vv1 * b1 + vv2 * (1 - b0 - b1);
+      e = e * eval_tex(C, m.tex_emission, tu, tv, q, q, nullptr);
+    }
+    ls.Le = e; ls.delta = false;
+    return maxc(e) > 0;
+  }
+  float pdf;
+  float3 d = env_sample(C, u1, u2, pdf);
+  if (pdf <= 0) return false;
+  ls.wi = d; ls.dist = INF; ls.pdf = psel * pdf; ls.Le = env_radiance(C, d); ls.delta = false;
+  return maxc(ls.Le) > 0;
+}
+static inline float pdf_light_tri(thread const Ctx &C, int tri, float3 wi, float dist, float area, float3 ng) {
+  int e = C.tri_light[tri];
+  if (e < 0) return 0;
+  float cosl = fabs(dot(ng, wi));
+  if (cosl < 1e-6f || area <= 0) return 0;
+  return C.light_prob[e] * dist * dist / (cosl * area);
+}
+static inline float pdf_light_env(thread const Ctx &C, float3 d) {
+  if (C.P->env_entry < 0) return 0;
+  return C.light_prob[C.P->env_entry] * env_pdf(C, d);
+}
+static inline int analytic_entry(thread const Ctx &C, int li) {
+  for (int i = 0; i < C.P->num_entries; ++i) if (C.entries[i].x == 0 && C.entries[i].y == li) return i;
+  return -1;
+}
+
+// ------------------------------------------------------------------ BSDF
+static inline float ggx_D(float ch, float a2) { float c2 = ch * ch; float d = c2 * (a2 - 1) + 1; return a2 / (PI * d * d); }
+static inline float ggx_lambda(float ct, float a2) {
+  float c2 = ct * ct;
+  if (c2 <= 0) return 1e10f;
+  float t2 = max(0.f, (1 - c2) / c2);
+  return 0.5f * (-1 + sqrt(1 + a2 * t2));
+}
+static inline float ggx_G1(float ct, float a2) { return 1.f / (1.f + ggx_lambda(fabs(ct), a2)); }
+static inline float ggx_G2(float co, float ci, float a2) { return 1.f / (1.f + ggx_lambda(fabs(co), a2) + ggx_lambda(fabs(ci), a2)); }
+static float3 sample_vndf(float3 Ve, float a, float u1, float u2) {
+  float3 Vh = nrm(float3(a * Ve.x, a * Ve.y, Ve.z));
+  float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+  float3 T1 = lensq > 0 ? float3(-Vh.y, Vh.x, 0) * (1.f / sqrt(lensq)) : float3(1, 0, 0);
+  float3 T2 = cross(Vh, T1);
+  float r = sqrt(u1), phi = 2 * PI * u2;
+  float t1 = r * cos(phi), t2 = r * sin(phi);
+  float s = 0.5f * (1 + Vh.z);
+  t2 = (1 - s) * sqrt(max(0.f, 1 - t1 * t1)) + s * t2;
+  float3 Nh = T1 * t1 + T2 * t2 + Vh * sqrt(max(0.f, 1 - t1 * t1 - t2 * t2));
+  return nrm(float3(a * Nh.x, a * Nh.y, max(1e-6f, Nh.z)));
+}
+static inline float schlick_w(float c) { float m = sat(1 - c); float m2 = m * m; return m2 * m2 * m; }
+static inline float3 schlick(float3 F0, float c) { return F0 + (1 - F0) * schlick_w(c); }
+static float fresnel_dielectric(float cos_i, float eta) {
+  cos_i = sat(cos_i);
+  float sin2_t = eta * eta * (1 - cos_i * cos_i);
+  if (sin2_t >= 1) return 1;
+  float cos_t = sqrt(1 - sin2_t);
+  float rs = (eta * cos_i - cos_t) / (eta * cos_i + cos_t);
+  float rp = (cos_i - eta * cos_t) / (cos_i + eta * cos_t);
+  return 0.5f * (rs * rs + rp * rp);
+}
+static bool refract_dir(float3 wo, float3 h, float eta, thread float3 &wt) {
+  float c = dot(wo, h);
+  float k = 1 - eta * eta * (1 - c * c);
+  if (k < 0) return false;
+  wt = nrm(-wo * eta + h * (eta * c - sqrt(k)));
+  return true;
+}
+
+struct BSDF {
+  MatEval m;
+  float3 n, ng, F0;
+  Frame f;
+  float a2, a, acc2, acc, at;
+  float pd, ps, pc, pt, psss;
+  float kd, kspec, kt, ksss, eta;
+  bool front;
+};
+static inline bool nonspecular(thread const BSDF &b) { return b.pd + b.ps + b.pc > 0; }
+
+static void make_bsdf(thread BSDF &b, thread const MatEval &m, thread const Surface &s, float3 wo) {
+  b.m = m;
+  b.front = s.front;
+  b.ng = s.front ? s.ng : -s.ng;
+  float3 n = s.front ? s.ns : -s.ns;
+  float cn = dot(n, wo);
+  if (cn < 0.02f) {
+    n = nrm(n + b.ng * (0.02f - cn + 1e-3f) * 1.5f);
+    if (dot(n, wo) <= 0) n = b.ng;
+  }
+  b.n = n;
+  b.f = frame2(n, s.dpdu);
+  float r = max(m.roughness, 0.02f);
+  b.a = r * r; b.a2 = b.a * b.a;
+  float rc = max(m.cc_rough, 0.02f);
+  b.acc = rc * rc; b.acc2 = b.acc * b.acc;
+  float rt = max(m.trans_rough, 0.f);
+  b.at = rt * rt;
+  b.eta = s.front ? 1.f / m.ior : m.ior;
+  float3 tint = lum(m.base) > 0 ? m.base / lum(m.base) : float3(1);
+  float f0d = sqr((m.ior - 1) / (m.ior + 1));
+  f0d *= m.specular * 2.f;
+  float3 F0d = mix(float3(1), tint, m.spec_tint) * f0d;
+  b.F0 = mix(F0d, m.base, m.metallic);
+  float cos_o = sat(dot(n, wo));
+  float dielectric = 1 - m.metallic;
+  b.kt = dielectric * m.transmission;
+  b.kspec = 1 - b.kt;
+  float diffuse_w = dielectric * (1 - m.transmission);
+  float fo = schlick_w(cos_o);
+  float spec_albedo = lum(b.F0 + (1 - b.F0) * fo);
+  b.kd = diffuse_w * (1 - m.subsurface);
+  b.ksss = diffuse_w * m.subsurface;
+  float wd = b.kd * max(0.05f, lum(m.base)) * (1 - f0d);
+  float wsss = b.ksss * max(0.05f, lum(m.base));
+  float ws = b.kspec > 0 ? b.kspec * max(spec_albedo, 0.04f) : 0;
+  float wc = m.clearcoat > 0 ? m.clearcoat * 0.25f * max(0.04f + 0.96f * fo, 0.1f) : 0;
+  float wt = b.kt;
+  float sum = wd + wsss + ws + wc + wt;
+  if (sum <= 0) { b.pd = b.ps = b.pc = b.pt = b.psss = 0; return; }
+  b.pd = wd / sum; b.psss = wsss / sum; b.ps = ws / sum; b.pc = wc / sum; b.pt = wt / sum;
+}
+
+static float3 bsdf_eval(thread const BSDF &b, float3 wo, float3 wi, thread float &pdf) {
+  pdf = 0;
+  float ci = dot(b.n, wi), co = dot(b.n, wo);
+  if (ci <= 0 || co <= 0 || dot(b.ng, wi) <= 0) return float3(0);
+  float3 h = nrm(wo + wi);
+  float ch = sat(dot(b.n, h)), cih = sat(dot(wi, h));
+  float3 f = float3(0);
+  float cc_att = 1.f;
+  if (b.m.clearcoat > 0) {
+    float Fc = 0.04f + 0.96f * schlick_w(cih);
+    float D = ggx_D(ch, b.acc2), G = ggx_G2(co, ci, b.acc2);
+    f += float3(b.m.clearcoat * Fc * D * G / (4 * co * ci));
+    cc_att = 1 - b.m.clearcoat * (0.04f + 0.96f * schlick_w(co));
+    pdf += b.pc * D * ggx_G1(co, b.acc2) / (4 * co);
+  }
+  if (b.kd > 0) {
+    float fl = schlick_w(ci), fv = schlick_w(co);
+    float rr = 2 * b.m.roughness * cih * cih;
+    float fd = (1 - 0.5f * fl) * (1 - 0.5f * fv) + rr * (fl + fv + fl * fv * (rr - 1));
+    float3 diff = b.m.base * (INV_PI * fd);
+    if (b.m.sheen > 0) {
+      float3 tint = lum(b.m.base) > 0 ? b.m.base / lum(b.m.base) : float3(1);
+      float3 sc = mix(float3(1), tint, b.m.sheen_tint);
+      diff += sc * (b.m.sheen * schlick_w(cih) * INV_PI);
+    }
+    f += diff * (b.kd * cc_att);
+    pdf += b.pd * ci * INV_PI;
+  }
+  if (b.kspec > 0) {
+    float3 F = schlick(b.F0, cih);
+    float D = ggx_D(ch, b.a2), G = ggx_G2(co, ci, b.a2);
+    float ems = 1.f + b.m.roughness * b.m.roughness * 0.6f * lum(b.F0);
+    f += F * (b.kspec * cc_att * ems * D * G / (4 * co * ci));
+    pdf += b.ps * D * ggx_G1(co, b.a2) / (4 * co);
+  }
+  return f;
+}
+
+struct BSample { float3 wi, weight; float pdf; int kind; float lobe_rough; };
+
+static bool bsdf_sample(thread const BSDF &b, float3 wo, float ul, float u1, float u2, thread BSample &bs) {
+  bs.lobe_rough = 1.f;
+  float c = ul;
+  if (c < b.pt) {
+    float uc = c / b.pt;
+    float3 wol = to_local(b.f, wo);
+    bool rough = b.at > 1e-4f;
+    float3 hl = rough ? sample_vndf(wol, max(b.at, 1e-4f), u1, u2) : float3(0, 0, 1);
+    float3 h = to_world(b.f, hl);
+    float coh = dot(wo, h);
+    if (coh <= 0) return false;
+    float eta = b.m.thin ? 1.f / b.m.ior : b.eta;
+    float F = fresnel_dielectric(coh, eta);
+    if (b.m.thin) F = 2 * F / (1 + F);
+    float a2t = b.at * b.at;
+    if (uc < F) {
+      bs.wi = refl(-wo, h);
+      if (dot(bs.wi, b.ng) <= 0 || dot(bs.wi, b.n) <= 0) return false;
+      bs.weight = float3(rough ? ggx_G1(dot(b.n, bs.wi), a2t) : 1.f);
+    } else {
+      if (b.m.thin) {
+        float3 r = refl(-wo, h);
+        bs.wi = nrm(r - b.n * (2 * dot(r, b.n)));
+      } else if (!refract_dir(wo, h, eta, bs.wi)) {
+        bs.wi = refl(-wo, h);
+      }
+      if (dot(bs.wi, b.ng) >= 0) return false;
+      bs.weight = b.m.base * (rough ? ggx_G1(dot(b.n, bs.wi), a2t) : 1.f);
+    }
+    bs.weight *= b.kt / b.pt;
+    bs.pdf = 0; bs.kind = 1; bs.lobe_rough = b.m.trans_rough;
+    return true;
+  }
+  c -= b.pt;
+  if (c < b.psss) {
+    bs.kind = 2;
+    float fr = 1.f - fresnel_dielectric(dot(b.n, wo), 1.f / b.m.ior);
+    bs.weight = float3(b.ksss * fr / b.psss);
+    bs.wi = -to_world(b.f, cosine_hemisphere(u1, u2));
+    bs.pdf = 0;
+    return true;
+  }
+  c -= b.psss;
+  float3 wi;
+  if (c < b.pd) {
+    wi = to_world(b.f, cosine_hemisphere(u1, u2));
+    bs.lobe_rough = 1.f;
+  } else if (c < b.pd + b.ps) {
+    bs.lobe_rough = b.m.roughness;
+    wi = refl(-wo, to_world(b.f, sample_vndf(to_local(b.f, wo), b.a, u1, u2)));
+  } else {
+    wi = refl(-wo, to_world(b.f, sample_vndf(to_local(b.f, wo), b.acc, u1, u2)));
+    bs.lobe_rough = b.m.cc_rough;
+  }
+  float pdf;
+  float3 f = bsdf_eval(b, wo, wi, pdf);
+  if (pdf <= 0 || maxc(f) <= 0) return false;
+  bs.wi = wi;
+  bs.weight = f * (dot(b.n, wi) / pdf);
+  bs.pdf = pdf;
+  bs.kind = 0;
+  return true;
+}
+
+// ------------------------------------------------------------------ fog
+static bool fog_segment(thread const Ctx &C, thread const Ray &r, float tmax, thread float &t0, thread float &t1) {
+  float y0 = C.P->fog_height_min, y1 = C.P->fog_height_max;
+  if (y1 <= y0) { t0 = 0; t1 = tmax; return tmax > 0; }
+  if (fabs(r.d.y) < 1e-8f) {
+    if (r.o.y < y0 || r.o.y > y1) return false;
+    t0 = 0; t1 = tmax; return true;
+  }
+  float ta = (y0 - r.o.y) / r.d.y, tb = (y1 - r.o.y) / r.d.y;
+  if (ta > tb) { float tt = ta; ta = tb; tb = tt; }
+  t0 = max(ta, 0.f); t1 = min(tb, tmax);
+  return t1 > t0;
+}
+static float fog_transmittance(thread const Ctx &C, thread const Ray &r, float tmax) {
+  if (!(C.P->fog_density > 0)) return 1.f;
+  float t0, t1;
+  if (!fog_segment(C, r, tmax, t0, t1)) return 1.f;
+  float len = t1 - t0;
+  if (len > 1e20f) return 0.f;
+  return exp(-C.P->fog_density * len);
+}
+static inline float hg_eval(float cos_t, float g) {
+  float d = 1 + g * g - 2 * g * cos_t;
+  return (1 - g * g) / (4 * PI * d * sqrt(max(d, 1e-8f)));
+}
+static float3 hg_sample(float3 fwd, float g, float u1, float u2) {
+  float cos_t;
+  if (fabs(g) < 1e-3f) cos_t = 1 - 2 * u1;
+  else { float s = (1 - g * g) / (1 - g + 2 * g * u1); cos_t = (1 + g * g - s * s) / (2 * g); }
+  cos_t = clamp(cos_t, -1.f, 1.f);
+  float sin_t = sqrt(max(0.f, 1 - cos_t * cos_t)), phi = 2 * PI * u2;
+  Frame f = frame1(fwd);
+  return to_world(f, float3(sin_t * cos(phi), sin_t * sin(phi), cos_t));
+}
+
+// ------------------------------------------------------------------ shadows
+static float3 shadow(thread const Ctx &C, float3 p, float3 wi, float dist, float time, thread bool &through) {
+  through = false;
+  Ray r; r.o = p; r.d = wi; r.time = time;
+  float tmax = dist < INF ? dist * (1 - 1e-4f) : INF;
+  int occ = occluded_any(C, r, tmax);
+  float3 T = float3(1);
+  if (occ == 1) return float3(0);
+  if (occ == 2) {
+    float3 o = p;
+    float remaining = tmax;
+    for (int iter = 0; iter < 32; ++iter) {
+      Ray rr; rr.o = o; rr.d = wi; rr.time = time;
+      Hit h;
+      if (!intersect(C, rr, remaining, h)) break;
+      Surface s = surface(C, h, rr);
+      uchar op = C.tri_opaque[h.tri];
+      if (op == 1) return float3(0);
+      if (op == 2) {
+        o = offset_ray(s.p, dot(wi, s.ng) > 0 ? s.ng : -s.ng);
+        remaining = remaining < INF ? remaining - h.t : INF;
+        if (remaining <= 0) break;
+        continue;
+      }
+      MatEval m = eval_material(C, s);
+      float3 tr = float3(1.f - m.alpha);
+      if (m.alpha > 0 && m.transmission > 0 && !C.P->caustics) {
+        float k = (1 - m.metallic) * m.transmission;
+        float F = fresnel_dielectric(fabs(dot(s.ns, wi)), s.front ? 1.f / m.ior : m.ior);
+        float3 glass = m.base * (k * (1 - F));
+        if (!s.front && m.has_atten) glass *= exp(-m.atten_sigma * h.t);
+        tr = tr + glass * m.alpha;
+        through = true;
+      }
+      T *= tr;
+      if (maxc(T) < 1e-4f) return float3(0);
+      o = offset_ray(s.p, dot(wi, s.ng) > 0 ? s.ng : -s.ng);
+      remaining = remaining < INF ? remaining - h.t : INF;
+      if (remaining <= 0) break;
+    }
+  }
+  T *= fog_transmittance(C, r, dist);
+  return T;
+}
+
+static bool hit_sphere_light(thread const Ctx &C, thread const Ray &r, float tmax, thread int &which, thread float &th) {
+  which = -1; th = tmax;
+  for (int i = 0; i < C.P->num_lights; ++i) {
+    device const AnLight &L = C.lights[i];
+    if (L.type == 2 || L.radius <= 1e-5f || L.intensity <= 0) continue;
+    float3 oc = r.o - float3(L.position[0], L.position[1], L.position[2]);
+    float b = dot(oc, r.d);
+    float c = dot(oc, oc) - L.radius * L.radius;
+    float disc = b * b - c;
+    if (disc < 0) continue;
+    float t = -b - sqrt(disc);
+    if (t <= 1e-5f) continue;
+    if (t < th) { th = t; which = i; }
+  }
+  return which >= 0;
+}
+
+// mode: 0 bsdf, 1 phase (g), 2 lambert (lam_n)
+static float3 nee(thread const Ctx &C, float3 p, float3 offset_n, float3 wo, float time, thread const BSDF &b, int mode,
+                  float g, thread Sampler &smp, float3 lam_n) {
+  float ul = get1(smp);
+  float2 u = get2(smp);
+  LightSample ls;
+  if (!sample_light(C, p, time, ul, u.x, u.y, ls)) return float3(0);
+  float3 f; float bpdf;
+  if (mode == 0) {
+    f = bsdf_eval(b, wo, ls.wi, bpdf);
+    f *= max(0.f, dot(b.n, ls.wi));
+  } else if (mode == 2) {
+    float c = dot(lam_n, ls.wi);
+    if (c <= 0) return float3(0);
+    f = float3(c * INV_PI); bpdf = c * INV_PI;
+  } else {
+    float ph = hg_eval(dot(-wo, ls.wi), g);
+    f = float3(ph); bpdf = ph;
+  }
+  if (maxc(f) <= 0) return float3(0);
+  float3 org = (mode != 1) ? offset_ray(p, dot(ls.wi, offset_n) > 0 ? offset_n : -offset_n) : p;
+  bool through = false;
+  float3 T = shadow(C, org, ls.wi, ls.dist, time, through);
+  if (maxc(T) <= 0) return float3(0);
+  float w = (ls.delta || through) ? 1.f : power_heuristic(ls.pdf, bpdf);
+  return f * ls.Le * T * (w / ls.pdf);
+}
+
+static inline float3 sss_alpha(float3 A) {
+  float3 r;
+  for (int i = 0; i < 3; ++i) {
+    float a = clamp(A[i], 0.f, 0.999f);
+    r[i] = 1 - exp(a * (-5.09406f + a * (2.61188f - a * 4.31805f)));
+  }
+  return r;
+}
+
+struct Aux { float3 albedo, normal; float depth; bool set; float alpha; };
+
+static inline void add_L(thread float3 &L, float3 c, float clampv, int depth) {
+  if (!fin3(c)) return;
+  if (clampv > 0 && depth > 0) { float m = maxc(c); if (m > clampv) c = c * (clampv / m); }
+  L += c;
+}
+
+static float3 Li(thread const Ctx &C, Ray ray, thread Sampler &smp, thread PCG &rng, thread Aux &aux) {
+  constant Params &P = *C.P;
+  float3 L = float3(0), beta = float3(1);
+  bool specular = true, had_nonspec = false, trans_chain = false;
+  float path_rough = 0.f, prev_pdf = 0;
+  int depth = 0, skips = 0;
+  const int maxd = max(0, P.max_depth);
+  const int integ = P.integrator;
+  const float clampv = P.clamp_indirect;
+  const bool fog = P.fog_density > 0;
+  aux.set = false; aux.alpha = 0; aux.depth = 0; aux.albedo = float3(0); aux.normal = float3(0);
+  BSDF dummy;
+  for (int guard = 0; guard < 4096; ++guard) {
+    Hit h;
+    bool hit = intersect(C, ray, INF, h);
+    float tmax = hit ? h.t : INF;
+    int sl; float slt;
+    bool lhit = hit_sphere_light(C, ray, tmax, sl, slt);
+    if (lhit) tmax = slt;
+    if (fog && integ == 0) {
+      float t0, t1;
+      if (fog_segment(C, ray, tmax, t0, t1)) {
+        float u = get1(smp);
+        float ts = t0 - log(1 - u) / P.fog_density;
+        if (ts < t1) {
+          float3 p = ray.o + ray.d * ts;
+          float3 alb = Vc(P.fog_color);
+          beta *= alb;
+          if (depth == 0 && !aux.set) { aux.albedo = alb; aux.normal = float3(0); aux.depth = ts; aux.set = true; aux.alpha = 1; }
+          if (depth >= maxd) break;
+          add_L(L, beta * nee(C, p, float3(0), -ray.d, ray.time, dummy, 1, P.fog_anisotropy, smp, float3(0)), clampv, depth);
+          float2 uu = get2(smp);
+          float3 nd = hg_sample(ray.d, P.fog_anisotropy, uu.x, uu.y);
+          prev_pdf = hg_eval(dot(ray.d, nd), P.fog_anisotropy);
+          specular = false; had_nonspec = true; trans_chain = false; path_rough = 1.f;
+          ray.o = p; ray.d = nd;
+          depth++;
+          if (depth >= max(3, P.rr_depth)) {
+            float q = max(0.05f, 1 - maxc(beta));
+            if (uni(rng) < q) break;
+            beta = beta / (1 - q);
+          }
+          continue;
+        }
+      }
+    }
+    if (lhit) {
+      device const AnLight &Lt = C.lights[sl];
+      if (depth > 0 || Lt.visible) {
+        float3 lp = float3(Lt.position[0], Lt.position[1], Lt.position[2]);
+        float3 col = float3(Lt.color[0], Lt.color[1], Lt.color[2]) * Lt.intensity / (PI * sqr(Lt.radius)) * spot_factor(Lt, -ray.d);
+        float w = 1;
+        if (!specular && depth > 0) {
+          int e = analytic_entry(C, sl);
+          float3 d = lp - ray.o;
+          float d2 = dot(d, d);
+          float cmax = sqrt(max(0.f, 1 - sqr(Lt.radius) / d2));
+          float lpdf = e >= 0 ? C.light_prob[e] / (2 * PI * (1 - cmax)) : 0;
+          w = power_heuristic(prev_pdf, lpdf);
+        }
+        if (!(trans_chain && !P.caustics)) add_L(L, beta * col * w, clampv, depth);
+        if (depth == 0) { aux.alpha = 1; if (!aux.set) { aux.albedo = float3(1); aux.normal = -ray.d; aux.depth = slt; aux.set = true; } }
+      }
+      break;
+    }
+    if (!hit) {
+      float3 Le = env_radiance(C, ray.d);
+      bool camray = (depth == 0) || (specular && !had_nonspec);
+      if (camray && !P.env_visible) Le = Vc(P.env_bg);
+      float w = 1;
+      if (!specular && depth > 0) w = power_heuristic(prev_pdf, pdf_light_env(C, ray.d));
+      if (integ == 1 && depth > 1) Le = float3(0);
+      for (int i = 0; i < P.num_lights; ++i) {
+        device const AnLight &Lt = C.lights[i];
+        if (Lt.type != 2 || Lt.angle <= 1e-5f || Lt.intensity <= 0) continue;
+        if (depth == 0 && !Lt.visible) continue;
+        float3 to = -nrm(float3(Lt.direction[0], Lt.direction[1], Lt.direction[2]));
+        float cmax = cos(Lt.angle);
+        if (dot(ray.d, to) >= cmax) {
+          float3 col = float3(Lt.color[0], Lt.color[1], Lt.color[2]) * Lt.intensity / (PI * sqr(sin(Lt.angle)));
+          float wl = 1;
+          if (!specular && depth > 0) {
+            int e = analytic_entry(C, i);
+            float lpdf = e >= 0 ? C.light_prob[e] / (2 * PI * (1 - cmax)) : 0;
+            wl = power_heuristic(prev_pdf, lpdf);
+          }
+          if (!(trans_chain && !P.caustics)) add_L(L, beta * col * wl, clampv, depth);
+        }
+      }
+      if (!(trans_chain && !P.caustics)) add_L(L, beta * Le * w, clampv, depth);
+      if (depth == 0) {
+        aux.alpha = 0;
+        if (!aux.set) { aux.albedo = saturate(env_radiance(C, ray.d)); aux.normal = float3(0); aux.depth = 0; aux.set = true; }
+      } else if (!aux.set) {
+        aux.albedo = saturate(env_radiance(C, ray.d)); aux.normal = float3(0); aux.set = true;
+      }
+      break;
+    }
+
+    Surface s = surface(C, h, ray);
+    perturb_normal(C, s);
+    MatEval m = eval_material(C, s);
+    if (integ == 6 || integ == 8) {
+      float3 em = m.emission; float al = m.alpha;
+      m.base = float3(0.72f); m.metallic = 0; m.roughness = 0.6f; m.ior = 1.5f; m.transmission = 0; m.specular = 0.3f;
+      m.spec_tint = 0; m.clearcoat = 0; m.cc_rough = 0; m.sheen = 0; m.sheen_tint = 0; m.subsurface = 0;
+      m.trans_rough = 0.6f; m.sss_radius = float3(0); m.emission = em; m.alpha = al; m.thin = false;
+      m.atten_sigma = float3(0); m.has_atten = false; m.one_sided = false; m.shadow_catcher = false;
+    }
+    if (!P.caustics && path_rough > 0.f) {
+      float k = 0.5f * path_rough;
+      m.roughness = max(m.roughness, k); m.cc_rough = max(m.cc_rough, k); m.trans_rough = max(m.trans_rough, k);
+    }
+    if (depth == 0) { aux.alpha = 1; aux.depth = h.t; }
+    if (depth == 0 && s.mat >= 0 && s.mat < P.num_materials && (C.mats[s.mat].flags & 1)) {
+      ray.o = offset_ray(s.p, s.front ? -s.ng : s.ng);
+      if (++skips > 64) break;
+      aux.alpha = 0;
+      continue;
+    }
+    if (m.alpha < 1.f) {
+      if (uni(rng) >= m.alpha) {
+        ray.o = offset_ray(s.p, s.front ? -s.ng : s.ng);
+        if (++skips > 64) break;
+        if (depth == 0) aux.alpha = 0;
+        continue;
+      }
+    }
+    if (!s.front && m.has_atten) beta *= exp(-m.atten_sigma * h.t);
+
+    bool spec_surface = (m.transmission > 0.5f && m.trans_rough < 0.1f) || (m.metallic > 0.5f && m.roughness < 0.1f);
+    if (!aux.set && (!spec_surface || depth >= 3)) {
+      aux.albedo = (m.transmission > 0.5f) ? float3(1) : m.base;
+      aux.normal = s.front ? s.ns : -s.ns;
+      aux.set = true;
+    }
+    if (integ == 3) { float3 n = s.front ? s.ns : -s.ns; L = (n + 1) * 0.5f; break; }
+    if (integ == 4) { L = m.base; break; }
+    if (integ == 5) { L = float3(h.t); break; }
+    if (integ == 7) { L = float3(s.u - floor(s.u), s.v - floor(s.v), 0); break; }
+    if (integ == 2) {
+      float3 n = s.front ? s.ns : -s.ns;
+      float3 ngo = s.front ? s.ng : -s.ng;
+      float2 uu = get2(smp);
+      Frame f = frame1(n);
+      float3 d = to_world(f, cosine_hemisphere(uu.x, uu.y));
+      if (dot(d, ngo) <= 0) { L = float3(0); break; }
+      Ray r; r.o = offset_ray(s.p, ngo); r.d = d; r.time = ray.time;
+      float dist = P.ao_distance > 0 ? P.ao_distance : P.scene_radius;
+      L = occluded_any(C, r, dist) == 1 ? float3(0) : float3(1);
+      break;
+    }
+    if (maxc(m.emission) > 0 && (!m.one_sided || s.front)) {
+      float w = 1;
+      if (!specular && depth > 0) w = power_heuristic(prev_pdf, pdf_light_tri(C, s.tri, ray.d, h.t, s.area, s.ng));
+      if (!(trans_chain && !P.caustics)) add_L(L, beta * m.emission * w, clampv, depth);
+    }
+    if (integ == 8 && depth == 0) {
+      float3 a, b, c;
+      tri_verts(C, s.tri, ray.time, a, b, c);
+      float w0 = 1 - h.u - h.v;
+      float ea = length(c - b), eb = length(a - c), ec = length(b - a);
+      float area2 = 2 * s.area;
+      float d0 = w0 * area2 / max(1e-9f, ea), d1 = h.u * area2 / max(1e-9f, eb), d2 = h.v * area2 / max(1e-9f, ec);
+      float dmin = min(d0, min(d1, d2));
+      float px = h.t * 2 * tan(P.camera.fov_y * 0.5f) / P.height;
+      if (dmin < P.wire_width * px) { L = float3(0.02f); break; }
+    }
+    if (depth >= maxd) break;
+
+    float3 wo = -ray.d;
+    BSDF b;
+    make_bsdf(b, m, s, wo);
+
+    if (m.shadow_catcher && depth == 0) {
+      float ul = get1(smp); float2 uu = get2(smp);
+      LightSample ls;
+      float vis = 1;
+      if (sample_light(C, s.p, ray.time, ul, uu.x, uu.y, ls)) {
+        bool through;
+        float3 T = shadow(C, offset_ray(s.p, b.ng), ls.wi, ls.dist, ray.time, through);
+        vis = lum(T);
+        if (dot(ls.wi, b.n) <= 0) vis = 1;
+      }
+      aux.alpha = 1 - vis;
+      L = float3(0);
+      break;
+    }
+    if (nonspecular(b)) add_L(L, beta * nee(C, s.p, b.ng, wo, ray.time, b, 0, 0, smp, float3(0)), clampv, depth);
+    float ul = get1(smp);
+    float2 uu = get2(smp);
+    BSample bs;
+    if (!bsdf_sample(b, wo, ul, uu.x, uu.y, bs)) break;
+    if (bs.kind == 2) {
+      float3 sigma_t = 1.f / max(float3(1e-5f), m.sss_radius);
+      float3 sigma_s = sss_alpha(m.base) * sigma_t;
+      beta *= bs.weight;
+      float3 pos = offset_ray(s.p, -b.ng);
+      float3 dir = bs.wi;
+      bool exited = false;
+      Surface es;
+      for (int step = 0; step < 256; ++step) {
+        int ch = min(2, (int)(uni(rng) * 3));
+        float tdist = -log(1 - uni(rng)) / sigma_t[ch];
+        Ray wr; wr.o = pos; wr.d = dir; wr.time = ray.time;
+        Hit wh;
+        if (intersect(C, wr, tdist, wh)) {
+          float3 Tr = exp(-sigma_t * wh.t);
+          float pdfc = (Tr.x + Tr.y + Tr.z) / 3.f;
+          if (pdfc <= 0) { beta = float3(0); break; }
+          beta *= Tr / pdfc;
+          es = surface(C, wh, wr);
+          exited = true;
+          break;
+        }
+        float3 Tr = exp(-sigma_t * tdist);
+        float3 pdfv = sigma_t * Tr;
+        float pdfc = (pdfv.x + pdfv.y + pdfv.z) / 3.f;
+        if (pdfc <= 0) { beta = float3(0); break; }
+        beta *= sigma_s * Tr / pdfc;
+        pos = pos + dir * tdist;
+        float ra = uni(rng), rb = uni(rng);
+        dir = uniform_sphere(ra, rb);
+        if (step > 8) {
+          float q = max(0.02f, 1 - maxc(beta));
+          if (uni(rng) < q) { beta = float3(0); break; }
+          beta = beta / (1 - q);
+        }
+      }
+      if (!exited || maxc(beta) <= 0) break;
+      float3 nout = dot(es.ng, dir) > 0 ? es.ng : -es.ng;
+      float3 nsh = dot(es.ns, nout) > 0 ? es.ns : -es.ns;
+      depth++;
+      add_L(L, beta * nee(C, es.p, nout, float3(0), ray.time, dummy, 2, 0, smp, nsh), clampv, depth);
+      float2 vv = get2(smp);
+      Frame ef = frame1(nsh);
+      float3 nd = to_world(ef, cosine_hemisphere(vv.x, vv.y));
+      if (dot(nd, nout) <= 0) break;
+      prev_pdf = dot(nsh, nd) * INV_PI;
+      specular = false; had_nonspec = true; trans_chain = false; path_rough = 1.f;
+      ray.o = offset_ray(es.p, nout); ray.d = nd;
+      if (depth >= maxd) break;
+      continue;
+    }
+    if (!fin3(bs.weight) || maxc(bs.weight) <= 0) break;
+    beta *= bs.weight;
+    path_rough = max(path_rough, bs.lobe_rough);
+    if (bs.kind == 1) { specular = true; if (had_nonspec) trans_chain = true; }
+    else { specular = false; had_nonspec = true; trans_chain = false; }
+    prev_pdf = bs.pdf;
+    depth++;
+    if (depth >= max(1, P.rr_depth)) {
+      float q = max(0.05f, 1 - maxc(beta));
+      if (uni(rng) < q) break;
+      beta = beta / (1 - q);
+    }
+    ray.o = offset_ray(s.p, dot(bs.wi, b.ng) > 0 ? b.ng : -b.ng);
+    ray.d = bs.wi;
+  }
+  return L;
+}
+
+static Ray camera_ray(thread const Ctx &C, float px, float py, float lu1, float lu2, float time) {
+  constant AnCamera &K = C.P->camera;
+  int W = C.P->width, H = C.P->height;
+  float aspect = (float)W / (float)H;
+  float3 pos = mix(Vc(K.pos0), Vc(K.pos1), time);
+  float3 fwd = nrm(mix(Vc(K.fwd0), Vc(K.fwd1), time));
+  float3 up = nrm(mix(Vc(K.up0), Vc(K.up1), time));
+  float3 right = nrm(cross(fwd, up));
+  up = cross(right, fwd);
+  float sx = (px / W) * 2 - 1, sy = 1 - (py / H) * 2;
+  Ray r; r.time = time;
+  if (K.projection == 1) {
+    float hh = K.ortho_height * 0.5f;
+    r.o = pos + right * (sx * hh * aspect) + up * (sy * hh); r.d = fwd;
+    return r;
+  }
+  if (K.projection == 2) {
+    float phi = sx * PI, theta = sy * PI * 0.5f;
+    r.o = pos; r.d = nrm(fwd * (cos(theta) * cos(phi)) + right * (cos(theta) * sin(phi)) + up * sin(theta));
+    return r;
+  }
+  if (K.projection == 3) {
+    float rr = sqrt(sx * sx * aspect * aspect + sy * sy);
+    float fov = K.fov_y > 0 ? K.fov_y : PI;
+    float theta = rr * fov * 0.5f, phi = atan2(sy, sx * aspect);
+    r.o = pos; r.d = nrm(fwd * cos(theta) + (right * cos(phi) + up * sin(phi)) * sin(theta));
+    return r;
+  }
+  float th = tan(K.fov_y * 0.5f);
+  float3 dcam = float3(sx * th * aspect + K.shift_x * 2 * th, sy * th + K.shift_y * 2 * th, 1);
+  float3 d = nrm(right * dcam.x + up * dcam.y + fwd * dcam.z);
+  r.o = pos; r.d = d;
+  if (K.aperture_radius > 0 && K.focus_distance > 0) {
+    float lx, ly;
+    if (K.blades >= 3) {
+      int nb = K.blades;
+      float seg = min((float)nb - 1, floor(lu1 * nb));
+      float uu = lu1 * nb - seg;
+      float a0 = K.blade_rotation + seg * 2 * PI / nb, a1 = K.blade_rotation + (seg + 1) * 2 * PI / nb;
+      float su = sqrt(uu);
+      float b0 = 1 - su, b1 = lu2 * su;
+      lx = cos(a0) * b0 + cos(a1) * b1;
+      ly = sin(a0) * b0 + sin(a1) * b1;
+    } else {
+      float2 dd = concentric_disk(lu1, lu2); lx = dd.x; ly = dd.y;
+    }
+    float ft = K.focus_distance / max(1e-6f, dot(d, fwd));
+    float3 focus = pos + d * ft;
+    r.o = pos + right * (lx * K.aperture_radius) + up * (ly * K.aperture_radius);
+    r.d = nrm(focus - r.o);
+  }
+  if (K.near_clip > 0) r.o = r.o + r.d * (K.near_clip / max(1e-6f, dot(r.d, fwd)));
+  return r;
+}
+
+static inline float gauss_sample(float u, float sigma) {
+  u = clamp(u, 1e-6f, 1 - 1e-6f);
+  return sigma * 0.5513288954217921f * log(u / (1 - u));
+}
+
+kernel void render(constant Params &P [[buffer(0)]],
+                   device const BVHNode *nodes [[buffer(1)]], device const int *idx [[buffer(2)]],
+                   device const float *P0 [[buffer(3)]], device const float *P1 [[buffer(4)]],
+                   device const float *N0 [[buffer(5)]], device const float *N1 [[buffer(6)]],
+                   device const float *UV [[buffer(7)]], device const float *PREF [[buffer(8)]],
+                   device const int *tri_mat [[buffer(9)]], device const uchar *tri_opaque [[buffer(10)]],
+                   device const AnMaterial *mats [[buffer(11)]], device const AnTexture *texs [[buffer(12)]],
+                   device const float *texdata [[buffer(13)]], device const AnLight *lights [[buffer(14)]],
+                   device const int2 *entries [[buffer(15)]], device const float *light_cdf [[buffer(16)]],
+                   device const float *light_prob [[buffer(17)]], device const int *tri_light [[buffer(18)]],
+                   device const float *env_func [[buffer(19)]], device const float *env_cond [[buffer(20)]],
+                   device const float *env_marg [[buffer(21)]], device const int *perm [[buffer(22)]],
+                   device float *accum [[buffer(23)]], device const uchar *active [[buffer(24)]],
+                   device int *counts [[buffer(25)]],
+                   uint2 gid [[thread_position_in_grid]]) {
+  if ((int)gid.x >= P.rw || (int)gid.y >= P.rh) return;
+  uint li = gid.y * (uint)P.rw + gid.x;
+  if (!active[li]) return;
+  int x = P.rx0 + (int)gid.x, y = P.ry0 + (int)gid.y;
+  Ctx C;
+  C.P = &P; C.nodes = nodes; C.idx = idx; C.P0 = P0; C.P1 = P1; C.N0 = N0; C.N1 = N1; C.UV = UV; C.PREF = PREF;
+  C.tri_mat = tri_mat; C.tri_opaque = tri_opaque; C.mats = mats; C.texs = texs; C.texdata = texdata;
+  C.lights = lights; C.entries = entries; C.light_cdf = light_cdf; C.light_prob = light_prob; C.tri_light = tri_light;
+  C.env_func = env_func; C.env_cond = env_cond; C.env_marg = env_marg; C.perm = perm;
+
+  device float *A = accum + (size_t)li * 12;
+  int count = counts[li];
+  uint ph = hash_combine(hash_combine(P.seed, (uint)x), (uint)y);
+  PCG rng = pcg_make(((ulong)ph << 32) ^ ((ulong)(uint)count * 0x9E3779B97F4A7C15UL));
+  float3 srgb = float3(0), salb = float3(0), snrm = float3(0);
+  float slum2 = 0, salpha = 0, sdepth = 0;
+  for (int s = 0; s < P.pass_spp; ++s) {
+    Sampler smp; smp.seed = ph; smp.index = (uint)(count + s); smp.dim = 0;
+    float2 f = get2(smp);
+    float2 lu = get2(smp);
+    float tu = get1(smp);
+    float ox = 0.5f, oy = 0.5f;
+    if (P.filter_sigma > 0 && !P.primary_only) { ox += gauss_sample(f.x, P.filter_sigma); oy += gauss_sample(f.y, P.filter_sigma); }
+    else if (!P.primary_only) { ox = f.x; oy = f.y; }
+    Ray r = camera_ray(C, x + ox, y + oy, lu.x, lu.y, P.cam_motion ? tu : 0.f);
+    Aux aux;
+    float3 c = Li(C, r, smp, rng, aux);
+    if (!fin3(c)) c = float3(0);
+    float l = lum(c);
+    srgb += c; slum2 += l * l; salpha += aux.alpha; salb += aux.albedo; snrm += aux.normal; sdepth += aux.depth;
+  }
+  A[0] += srgb.x; A[1] += srgb.y; A[2] += srgb.z; A[3] += slum2; A[4] += salpha;
+  A[5] += salb.x; A[6] += salb.y; A[7] += salb.z; A[8] += snrm.x; A[9] += snrm.y; A[10] += snrm.z; A[11] += sdepth;
+  counts[li] = count + P.pass_spp;
+}
+)MSL"

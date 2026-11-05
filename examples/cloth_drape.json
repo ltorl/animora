@@ -1,0 +1,28 @@
+{
+  "comment": "Cloth simulation: a silk sheet falls and drapes over a sphere; a pinned flag waves in turbulent wind.",
+  "settings": {
+    "resolution": [1280, 720], "fps": 24, "frame_range": [1, 72], "samples": 64,
+    "output": "render/cloth/frame_####.png", "video": "render/cloth.mp4"
+  },
+  "dynamics": {"substeps": 8},
+  "environment": {"type": "sky", "sun_elevation": 35, "sun_azimuth": 200, "strength": 1.0},
+  "materials": {
+    "floor": {"preset": "studio_floor"},
+    "silk": {"preset": "fabric", "base_color": "#b8263b", "roughness": 0.4, "sheen": 1.0},
+    "flag": {"preset": "fabric", "base_color": {"type": "stripes", "scale": 6, "color1": "#f4f1e8", "color2": "#1d4e9e"}, "thin_walled": true},
+    "pole": {"preset": "brushed_metal"},
+    "ball": {"preset": "clay"}
+  },
+  "nodes": [
+    {"name": "camera", "type": "camera", "translate": [0, 2.6, 8], "look_at": [0.6, 1.2, 0], "focal_length": 32},
+    {"name": "floor", "type": "mesh", "primitive": "plane", "size": 40, "material": "floor"},
+    {"name": "ball", "type": "mesh", "primitive": "uv_sphere", "radius": 0.8, "translate": [-1.4, 0.8, 0], "material": "ball"},
+    {"name": "sheet", "type": "cloth", "size": 2.6, "resolution": 36, "translate": [-1.4, 2.4, 0], "rotate": [0, 20, 0],
+     "material": "silk", "stiffness": 1.0, "bend": 0.05, "damping": 0.02, "thickness": 0.02, "friction": 0.6,
+     "colliders": ["ball"], "modifiers": [{"type": "subdivide", "levels": 1}]},
+    {"name": "pole", "type": "mesh", "primitive": "cylinder", "radius": 0.04, "height": 3.2, "translate": [1.6, 1.6, -0.5], "material": "pole"},
+    {"name": "flag", "type": "cloth", "size": 1.0, "resolution": 28, "translate": [2.25, 2.7, -0.5], "rotate": [90, 0, 0],
+     "scale": [1.3, 1, 0.8], "material": "flag", "pin": "edge_min_x", "bend": 0.02, "drag": 1.0,
+     "wind": [10.0, 0, 1.5], "turbulence": 4.0, "ground": false, "modifiers": [{"type": "subdivide", "levels": 1}]}
+  ]
+}

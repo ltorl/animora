@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+animora/native/build/
+render/
+turntable/
+*.cache.npz
+.DS_Store
+build/
+dist/
+.venv/

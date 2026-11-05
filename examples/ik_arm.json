@@ -1,0 +1,238 @@
+{
+  "name": "ik_arm",
+  "settings": {
+    "resolution": [
+      1280,
+      720
+    ],
+    "fps": 24,
+    "frame_start": 1,
+    "frame_end": 96,
+    "samples": 64,
+    "output": "render/ik_arm/frame_####.png",
+    "video": "render/ik_arm.mp4",
+    "tonemap": "agx"
+  },
+  "environment": {
+    "type": "studio",
+    "color": [
+      0.06,
+      0.065,
+      0.08
+    ]
+  },
+  "nodes": [
+    {
+      "name": "cam",
+      "type": "camera",
+      "translate": [
+        0,
+        2.0,
+        7.5
+      ],
+      "look_at": [
+        0,
+        1.6,
+        0
+      ],
+      "fov": 38
+    },
+    {
+      "name": "floor",
+      "type": "mesh",
+      "primitive": "plane",
+      "size": 30,
+      "material": {
+        "preset": "studio_floor"
+      }
+    },
+    {
+      "name": "key",
+      "type": "light",
+      "light": "area",
+      "translate": [
+        4,
+        6,
+        4
+      ],
+      "look_at": [
+        0,
+        1.5,
+        0
+      ],
+      "size": 3,
+      "intensity": 60
+    },
+    {
+      "name": "base",
+      "type": "mesh",
+      "primitive": "cylinder",
+      "radius": 0.5,
+      "height": 0.2,
+      "translate": [
+        0,
+        0.1,
+        0
+      ],
+      "material": {
+        "preset": "brushed_metal"
+      }
+    },
+    {
+      "name": "shoulder",
+      "type": "joint",
+      "translate": [
+        0,
+        0.2,
+        0
+      ]
+    },
+    {
+      "name": "elbow",
+      "type": "joint",
+      "parent": "shoulder",
+      "translate": [
+        0,
+        1.5,
+        0
+      ]
+    },
+    {
+      "name": "wrist",
+      "type": "joint",
+      "parent": "elbow",
+      "translate": [
+        0,
+        1.5,
+        0
+      ]
+    },
+    {
+      "name": "tip",
+      "type": "joint",
+      "parent": "wrist",
+      "translate": [
+        0,
+        0.5,
+        0
+      ]
+    },
+    {
+      "name": "arm",
+      "type": "mesh",
+      "primitive": "cylinder",
+      "radius": 0.18,
+      "radius_top": 0.1,
+      "height": 3.5,
+      "height_segments": 48,
+      "segments": 32,
+      "translate": [
+        0,
+        1.95,
+        0
+      ],
+      "skin": {
+        "root": "shoulder",
+        "method": "dual_quaternion",
+        "smooth": 3
+      },
+      "material": {
+        "preset": "car_paint",
+        "base_color": [
+          0.85,
+          0.25,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "target",
+      "type": "locator",
+      "translate": {
+        "keys": [
+          [
+            1,
+            [
+              1.6,
+              1.0,
+              1.0
+            ]
+          ],
+          [
+            24,
+            [
+              -1.8,
+              2.4,
+              0.6
+            ]
+          ],
+          [
+            48,
+            [
+              0.2,
+              3.2,
+              -1.2
+            ]
+          ],
+          [
+            72,
+            [
+              2.0,
+              2.0,
+              0.4
+            ]
+          ],
+          [
+            96,
+            [
+              1.6,
+              1.0,
+              1.0
+            ]
+          ]
+        ],
+        "interp": "auto"
+      }
+    },
+    {
+      "name": "target_ball",
+      "type": "mesh",
+      "primitive": "sphere",
+      "radius": 0.15,
+      "parent": "target",
+      "material": {
+        "preset": "neon",
+        "emission": [
+          0.2,
+          0.7,
+          1.0
+        ],
+        "emission_strength": 6
+      }
+    },
+    {
+      "name": "pole",
+      "type": "locator",
+      "translate": [
+        0,
+        2.0,
+        3.0
+      ]
+    }
+  ],
+  "ik": [
+    {
+      "name": "arm_ik",
+      "start": "shoulder",
+      "end": "wrist",
+      "target": "target",
+      "pole": "pole",
+      "solver": "two_bone",
+      "soft": 0.1
+    }
+  ],
+  "post": {
+    "bloom": 0.12,
+    "vignette": 0.25
+  }
+}

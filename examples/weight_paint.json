@@ -1,0 +1,19 @@
+{
+ "comment": "Weight painting: a symmetric arm span skinned to seven joints. The automatic weights are refined with brush strokes that are scripted and replayable: a surface brush keeps each elbow crease tight and is mirrored to the other side, then smooth, mirror, prune and max-influence passes run. Preview the result with `animora weights examples/weight_paint.json span -j l_elbow -o heat.png`.",
+ "settings": {"resolution": [1280, 720], "fps": 24, "frame_range": [1, 48], "samples": 48, "output": "render/weight_paint/frame_####.png", "video": "render/weight_paint.mp4", "tonemap": "agx"},
+ "environment": {"type": "studio", "color": [0.06, 0.065, 0.08]},
+ "nodes": [
+  {"name": "cam", "type": "camera", "translate": [0, 1.75, 3.4], "look_at": [0, 1.45, 0], "fov": 40},
+  {"name": "floor", "type": "mesh", "primitive": "plane", "size": 30, "material": {"preset": "studio_floor"}},
+  {"name": "key", "type": "light", "light": "area", "translate": [3, 5, 4], "look_at": [0, 1.4, 0], "intensity": 70, "size": 2.5},
+  {"name": "rim", "type": "light", "light": "area", "translate": [-4, 3, -3], "look_at": [0, 1.4, 0], "intensity": 35, "size": 2},
+  {"name": "chest", "type": "joint", "translate": [0, 1.4, 0]},
+  {"name": "l_shoulder", "type": "joint", "parent": "chest", "translate": [0.3, 0, 0], "rotate": {"keys": [[1, [0, 0, 0]], [12, [0, 0, 35], "ease"], [24, [0, 0, -20], "ease"], [36, [0, 0, 30], "ease"], [48, [0, 0, 0], "ease"]]}},
+  {"name": "l_elbow", "type": "joint", "parent": "l_shoulder", "translate": [0.6, 0, 0], "rotate": {"keys": [[1, [0, 0, 0]], [16, [0, 0, 95], "ease"], [32, [0, 0, 20], "ease"], [48, [0, 0, 0], "ease"]]}},
+  {"name": "l_wrist", "type": "joint", "parent": "l_elbow", "translate": [0.55, 0, 0]},
+  {"name": "r_shoulder", "type": "joint", "parent": "chest", "translate": [-0.3, 0, 0], "rotate": {"keys": [[1, [0, 0, 0]], [12, [0, 0, -35], "ease"], [24, [0, 0, 20], "ease"], [36, [0, 0, -30], "ease"], [48, [0, 0, 0], "ease"]]}},
+  {"name": "r_elbow", "type": "joint", "parent": "r_shoulder", "translate": [-0.6, 0, 0], "rotate": {"keys": [[1, [0, 0, 0]], [16, [0, 0, -95], "ease"], [32, [0, 0, -20], "ease"], [48, [0, 0, 0], "ease"]]}},
+  {"name": "r_wrist", "type": "joint", "parent": "r_elbow", "translate": [-0.55, 0, 0]},
+  {"name": "span", "type": "mesh", "primitive": "cylinder", "radius": 0.13, "height": 3.1, "segments": 32, "translate": [0, 1.4, 0], "rotate": [0, 0, 90], "material": {"preset": "car_paint", "base_color": [0.1, 0.45, 0.85]}, "skin": {"root": "chest", "method": "dual_quaternion", "smooth": 2, "locked_joints": ["chest"], "weight_paint": [{"joint": "l_elbow", "op": "replace", "value": 1.0, "center": [1.12, 1.4, 0], "radius": 0.2, "falloff": "smooth", "surface": true, "mirror": "x"}, {"joint": "l_shoulder", "op": "add", "value": 0.3, "bone": "l_shoulder", "radius": 0.12, "strength": 0.6, "mirror": true}, {"op": "smooth", "bone": "l_elbow", "radius": 0.25, "iterations": 2, "strength": 0.5}, {"op": "mirror", "axis": "x", "direction": "+"}, {"op": "prune", "threshold": 0.02}, {"op": "max_influences", "count": 3}]}, "height_segments": 72}
+ ]
+}

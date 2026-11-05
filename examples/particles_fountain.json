@@ -1,0 +1,27 @@
+{
+  "comment": "Particles: an emissive spark fountain swirled by curl noise, colliding with the ground, rendered with bloom.",
+  "settings": {
+    "resolution": [1280, 720], "fps": 24, "frame_range": [1, 96], "samples": 64,
+    "output": "render/particles/frame_####.png", "video": "render/particles.mp4", "exposure": -0.3
+  },
+  "environment": {"type": "gradient", "zenith": "#05070d", "horizon": "#141a26", "ground": "#05070d", "strength": 1.0},
+  "post": {"bloom": 0.25, "vignette": 0.35},
+  "materials": {
+    "floor": {"base_color": "#20232a", "roughness": 0.25, "specular": 0.6},
+    "spark": {"preset": "emissive", "emission": "#ffb347", "emission_strength": 30},
+    "bowl": {"preset": "brushed_metal"}
+  },
+  "nodes": [
+    {"name": "camera", "type": "camera", "translate": [0, 2.2, 9], "look_at": [0, 2.0, 0], "focal_length": 30},
+    {"name": "fill", "type": "light", "light": "point", "translate": [0, 0.6, 0], "intensity": "=20 + 6*noise(t*8)", "color": "#ff9a3c",
+     "comment": "glow at the nozzle"},
+    {"name": "floor", "type": "mesh", "primitive": "plane", "size": 40, "material": "floor"},
+    {"name": "nozzle", "type": "mesh", "primitive": "cylinder", "radius": 0.3, "height": 0.3, "translate": [0, 0.15, 0], "material": "bowl"},
+    {"name": "sparks", "type": "particles", "translate": [0, 0.32, 0], "material": "spark",
+     "emitter": {"shape": "disc", "radius": 0.08},
+     "rate": 400, "speed": 7.0, "speed_random": 0.25, "spread": 12, "lifetime": 2.2, "lifetime_random": 0.4,
+     "size": 0.035, "size_random": 0.4, "size_over_life": [[0, 1], [1, 0.1]], "drag": 0.15, "bounce": 0.35,
+     "fields": [{"type": "curl", "strength": 3.0, "frequency": 0.8, "speed": 0.6}],
+     "max_particles": 3000, "render": {"shape": "sphere", "subdivisions": 1}}
+  ]
+}

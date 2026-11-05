@@ -1,0 +1,29 @@
+{
+  "comment": "Hair and fur: a furry ball with groomed, clumped, curly strands that swing with strand dynamics as it bounces.",
+  "settings": {
+    "resolution": [1280, 720], "fps": 24, "frame_range": [1, 48], "samples": 48,
+    "output": "render/fur/frame_####.png", "video": "render/fur_ball.mp4"
+  },
+  "environment": {"type": "sky", "sun_elevation": 35, "sun_azimuth": 140, "strength": 1.0},
+  "materials": {
+    "floor": {"preset": "concrete"},
+    "skin": {"base_color": [0.1, 0.06, 0.04], "roughness": 0.8},
+    "fur": {"preset": "fur"}
+  },
+  "nodes": [
+    {"name": "camera", "type": "camera", "translate": [0, 1.4, 4.2], "look_at": [0, 0.9, 0], "focal_length": 45},
+    {"name": "key", "type": "light", "light": "area", "translate": [3, 4, 3], "look_at": [0, 1, 0], "intensity": 60, "size": 2},
+    {"name": "floor", "type": "mesh", "primitive": "plane", "size": 30, "material": "floor"},
+    {"name": "ball", "type": "mesh", "primitive": "uv_sphere", "radius": 0.6, "segments": 48, "rings": 24, "material": "skin",
+     "translate": {"keys": [[1, [0, 0.62, 0]], [12, [0, 1.6, 0], "ease_out"], [24, [0, 0.62, 0], "ease_in"],
+                            [36, [0, 1.6, 0], "ease_out"], [48, [0, 0.62, 0], "ease_in"]]},
+     "rotate": {"keys": [[1, [0, 0, 0]], [48, [0, 180, 0]]]}},
+    {"name": "fur", "type": "hair", "source": "ball", "material": "fur",
+     "count": 12000, "length": 0.22, "length_variation": 0.4, "segments": 6, "width": 0.006, "tip_width": 0.1,
+     "gravity": 0.25, "curl": 0.4, "curl_frequency": 2.0, "frizz": 0.3, "clump": 0.35, "clump_count": 600,
+     "comb": [0, -1, 0], "comb_strength": 0.3,
+     "groom": [{"center": [0, 1.22, 0], "radius": 0.5, "length": 1.6, "comb": [0, 0, 1], "comb_strength": 0.7}],
+     "dynamics": true, "stiffness": 0.12, "damping": 0.06, "substeps": 3,
+     "colliders": [{"node": "floor"}]}
+  ]
+}

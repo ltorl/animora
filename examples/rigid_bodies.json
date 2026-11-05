@@ -1,0 +1,39 @@
+{
+  "comment": "Rigid body dynamics: a stack of crates hit by a heavy ball, spheres, capsules, a cylinder and a torus (exact mesh collision shape) tumbling down.",
+  "settings": {
+    "resolution": [1280, 720], "fps": 24, "frame_range": [1, 96], "samples": 64,
+    "output": "render/rigid/frame_####.png", "video": "render/rigid_bodies.mp4"
+  },
+  "dynamics": {"gravity": [0, -9.81, 0], "substeps": 10, "ground_friction": 0.6, "ground_restitution": 0.3},
+  "environment": {"type": "sky", "sun_elevation": 30, "sun_azimuth": 120, "strength": 1.0},
+  "materials": {
+    "floor": {"preset": "concrete"},
+    "crate": {"preset": "wood"},
+    "ball": {"preset": "chrome"},
+    "red": {"preset": "plastic", "base_color": "#d63a2f"},
+    "blue": {"preset": "plastic", "base_color": "#2f6ad6"}
+  },
+  "nodes": [
+    {"name": "camera", "type": "camera", "translate": [7, 3.5, 9], "look_at": [0, 1, 0], "focal_length": 32},
+    {"name": "floor", "type": "mesh", "primitive": "plane", "size": 60, "material": "floor"},
+    {"name": "crate1", "type": "mesh", "primitive": "cube", "size": 1, "translate": [0, 0.5, 0], "material": "crate", "rigid_body": {"mass": 1}},
+    {"name": "crate2", "type": "mesh", "primitive": "cube", "size": 1, "translate": [1.05, 0.5, 0], "material": "crate", "rigid_body": {"mass": 1}},
+    {"name": "crate3", "type": "mesh", "primitive": "cube", "size": 1, "translate": [0.52, 1.5, 0], "material": "crate", "rigid_body": {"mass": 1}},
+    {"name": "crate4", "type": "mesh", "primitive": "cube", "size": 1, "translate": [-1.05, 0.5, 0], "material": "crate", "rigid_body": {"mass": 1}},
+    {"name": "crate5", "type": "mesh", "primitive": "cube", "size": 1, "translate": [-0.52, 1.5, 0], "material": "crate", "rigid_body": {"mass": 1}},
+    {"name": "crate6", "type": "mesh", "primitive": "cube", "size": 1, "translate": [0, 2.5, 0], "material": "crate", "rigid_body": {"mass": 1}},
+    {"name": "wrecking_ball", "type": "mesh", "primitive": "uv_sphere", "radius": 0.6, "segments": 48, "rings": 24,
+     "translate": [-8, 0.6, 0.15], "material": "ball",
+     "rigid_body": {"mass": 8, "velocity": [9, 0, 0], "start_frame": 12}},
+    {"name": "s1", "type": "mesh", "primitive": "ico_sphere", "radius": 0.3, "translate": [2.5, 5, 1.5], "material": "red",
+     "rigid_body": {"mass": 0.5, "restitution": 0.7, "velocity": [-1, 0, 0]}},
+    {"name": "s2", "type": "mesh", "primitive": "ico_sphere", "radius": 0.25, "translate": [3, 7, -1], "material": "blue",
+     "rigid_body": {"mass": 0.4, "restitution": 0.8, "velocity": [-1.5, 0, 0.5]}},
+    {"name": "pill", "type": "mesh", "primitive": "capsule", "radius": 0.18, "height": 0.9, "translate": [1.2, 4.5, 1.2],
+     "rotate": [0, 30, 60], "material": "red", "rigid_body": {"mass": 0.6, "restitution": 0.3}},
+    {"name": "can", "type": "mesh", "primitive": "cylinder", "radius": 0.25, "height": 0.6, "translate": [-0.6, 5.5, 1.4],
+     "rotate": [40, 0, 20], "material": "ball", "rigid_body": {"mass": 0.5, "restitution": 0.3}},
+    {"name": "ring", "type": "mesh", "primitive": "torus", "major_radius": 0.45, "minor_radius": 0.12, "translate": [2.2, 3.5, -1.2],
+     "rotate": [70, 0, 0], "material": "blue", "rigid_body": {"mass": 0.5, "shape": "mesh", "restitution": 0.2}}
+  ]
+}

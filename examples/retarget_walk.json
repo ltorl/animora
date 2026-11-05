@@ -1,0 +1,779 @@
+{
+ "comment": "HumanIK-style retargeting: a T-pose BVH walk with HumanIK joint names (cm) drives an A-pose mannequin with Unreal-style names and different proportions (m). Joint names are matched automatically, rest poses are matched, stride is scaled by leg length and planted feet are locked with two-bone IK.",
+ "settings": {
+  "fps": 30,
+  "frame_range": [
+   1,
+   96
+  ],
+  "resolution": [
+   1280,
+   720
+  ],
+  "samples": 48
+ },
+ "retarget": {
+  "source": "data/walk_cycle.bvh",
+  "foot_lock": true
+ },
+ "camera": "cam",
+ "environment": {
+  "type": "sky",
+  "sun_elevation": 35,
+  "sun_azimuth": 120,
+  "strength": 1.0
+ },
+ "materials": {
+  "mannequin": {
+   "preset": "plastic",
+   "base_color": "#e8b04a",
+   "roughness": 0.35
+  },
+  "floor": {
+   "preset": "studio_floor"
+  }
+ },
+ "nodes": [
+  {
+   "name": "cam",
+   "type": "camera",
+   "translate": [
+    5.2,
+    1.4,
+    2.2
+   ],
+   "focal_length": 40,
+   "look_at": {
+    "target": "pelvis",
+    "offset": [
+     0,
+     -0.15,
+     0
+    ]
+   }
+  },
+  {
+   "name": "key",
+   "type": "light",
+   "light": "area",
+   "translate": [
+    3,
+    5,
+    2
+   ],
+   "intensity": 60,
+   "size": 2.5,
+   "look_at": [
+    0,
+    0,
+    2
+   ]
+  },
+  {
+   "name": "floor",
+   "type": "mesh",
+   "primitive": "plane",
+   "size": 30,
+   "material": "floor"
+  },
+  {
+   "name": "pelvis",
+   "type": "joint",
+   "translate": [
+    0,
+    1.02,
+    0
+   ]
+  },
+  {
+   "name": "pelvis_spine_01_geo",
+   "type": "mesh",
+   "parent": "pelvis",
+   "primitive": "capsule",
+   "radius": 0.11,
+   "height": 0.232,
+   "segments": 20,
+   "translate": [
+    0.0,
+    0.05,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "spine_01",
+   "type": "joint",
+   "translate": [
+    0,
+    0.1,
+    0
+   ],
+   "parent": "pelvis"
+  },
+  {
+   "name": "spine_01_spine_02_geo",
+   "type": "mesh",
+   "parent": "spine_01",
+   "primitive": "capsule",
+   "radius": 0.105,
+   "height": 0.276,
+   "segments": 20,
+   "translate": [
+    0.0,
+    0.075,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "spine_02",
+   "type": "joint",
+   "translate": [
+    0,
+    0.15,
+    0
+   ],
+   "parent": "spine_01"
+  },
+  {
+   "name": "spine_02_spine_03_geo",
+   "type": "mesh",
+   "parent": "spine_02",
+   "primitive": "capsule",
+   "radius": 0.11,
+   "height": 0.28200000000000003,
+   "segments": 20,
+   "translate": [
+    0.0,
+    0.075,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "spine_03",
+   "type": "joint",
+   "translate": [
+    0,
+    0.15,
+    0
+   ],
+   "parent": "spine_02"
+  },
+  {
+   "name": "spine_03_neck_01_geo",
+   "type": "mesh",
+   "parent": "spine_03",
+   "primitive": "capsule",
+   "radius": 0.12,
+   "height": 0.314,
+   "segments": 20,
+   "translate": [
+    0.0,
+    0.085,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "neck_01",
+   "type": "joint",
+   "translate": [
+    0,
+    0.17,
+    0
+   ],
+   "parent": "spine_03"
+  },
+  {
+   "name": "neck_01_head_geo",
+   "type": "mesh",
+   "parent": "neck_01",
+   "primitive": "capsule",
+   "radius": 0.045,
+   "height": 0.144,
+   "segments": 20,
+   "translate": [
+    0.0,
+    0.045,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "head",
+   "type": "joint",
+   "translate": [
+    0,
+    0.09,
+    0
+   ],
+   "parent": "neck_01"
+  },
+  {
+   "name": "clavicle_l",
+   "type": "joint",
+   "translate": [
+    0.035,
+    0.12,
+    0.0
+   ],
+   "parent": "spine_03"
+  },
+  {
+   "name": "clavicle_l_upperarm_l_geo",
+   "type": "mesh",
+   "parent": "clavicle_l",
+   "primitive": "capsule",
+   "radius": 0.04,
+   "height": 0.198,
+   "segments": 20,
+   "translate": [
+    0.075,
+    0.0,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    -90.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "upperarm_l",
+   "type": "joint",
+   "translate": [
+    0.15,
+    0,
+    0
+   ],
+   "rotate": [
+    0,
+    0,
+    -45
+   ],
+   "parent": "clavicle_l"
+  },
+  {
+   "name": "upperarm_l_lowerarm_l_geo",
+   "type": "mesh",
+   "parent": "upperarm_l",
+   "primitive": "capsule",
+   "radius": 0.045,
+   "height": 0.344,
+   "segments": 20,
+   "translate": [
+    0.145,
+    0.0,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    -90.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "lowerarm_l",
+   "type": "joint",
+   "translate": [
+    0.29,
+    0,
+    0
+   ],
+   "parent": "upperarm_l"
+  },
+  {
+   "name": "lowerarm_l_hand_l_geo",
+   "type": "mesh",
+   "parent": "lowerarm_l",
+   "primitive": "capsule",
+   "radius": 0.038,
+   "height": 0.2956,
+   "segments": 20,
+   "translate": [
+    0.125,
+    0.0,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    -90.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "hand_l",
+   "type": "joint",
+   "translate": [
+    0.25,
+    0,
+    0
+   ],
+   "parent": "lowerarm_l"
+  },
+  {
+   "name": "clavicle_r",
+   "type": "joint",
+   "translate": [
+    -0.035,
+    0.12,
+    0.0
+   ],
+   "parent": "spine_03"
+  },
+  {
+   "name": "clavicle_r_upperarm_r_geo",
+   "type": "mesh",
+   "parent": "clavicle_r",
+   "primitive": "capsule",
+   "radius": 0.04,
+   "height": 0.198,
+   "segments": 20,
+   "translate": [
+    -0.075,
+    0.0,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    90.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "upperarm_r",
+   "type": "joint",
+   "translate": [
+    -0.15,
+    0,
+    0
+   ],
+   "rotate": [
+    0,
+    0,
+    45
+   ],
+   "parent": "clavicle_r"
+  },
+  {
+   "name": "upperarm_r_lowerarm_r_geo",
+   "type": "mesh",
+   "parent": "upperarm_r",
+   "primitive": "capsule",
+   "radius": 0.045,
+   "height": 0.344,
+   "segments": 20,
+   "translate": [
+    -0.145,
+    0.0,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    90.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "lowerarm_r",
+   "type": "joint",
+   "translate": [
+    -0.29,
+    0,
+    0
+   ],
+   "parent": "upperarm_r"
+  },
+  {
+   "name": "lowerarm_r_hand_r_geo",
+   "type": "mesh",
+   "parent": "lowerarm_r",
+   "primitive": "capsule",
+   "radius": 0.038,
+   "height": 0.2956,
+   "segments": 20,
+   "translate": [
+    -0.125,
+    0.0,
+    0.0
+   ],
+   "rotate": [
+    0.0,
+    -0.0,
+    90.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "hand_r",
+   "type": "joint",
+   "translate": [
+    -0.25,
+    0,
+    0
+   ],
+   "parent": "lowerarm_r"
+  },
+  {
+   "name": "thigh_l",
+   "type": "joint",
+   "translate": [
+    0.1,
+    -0.05,
+    0
+   ],
+   "parent": "pelvis"
+  },
+  {
+   "name": "thigh_l_calf_l_geo",
+   "type": "mesh",
+   "parent": "thigh_l",
+   "primitive": "capsule",
+   "radius": 0.07,
+   "height": 0.5539999999999999,
+   "segments": 20,
+   "translate": [
+    0.0,
+    -0.235,
+    0.0
+   ],
+   "rotate": [
+    180.0,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "calf_l",
+   "type": "joint",
+   "translate": [
+    0,
+    -0.47,
+    0
+   ],
+   "parent": "thigh_l"
+  },
+  {
+   "name": "calf_l_foot_l_geo",
+   "type": "mesh",
+   "parent": "calf_l",
+   "primitive": "capsule",
+   "radius": 0.055,
+   "height": 0.496,
+   "segments": 20,
+   "translate": [
+    0.0,
+    -0.215,
+    0.0
+   ],
+   "rotate": [
+    180.0,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "foot_l",
+   "type": "joint",
+   "translate": [
+    0,
+    -0.43,
+    0
+   ],
+   "parent": "calf_l"
+  },
+  {
+   "name": "foot_l_ball_l_geo",
+   "type": "mesh",
+   "parent": "foot_l",
+   "primitive": "capsule",
+   "radius": 0.045,
+   "height": 0.21952945357246847,
+   "segments": 20,
+   "translate": [
+    0.0,
+    -0.035,
+    0.075
+   ],
+   "rotate": [
+    115.01689347810004,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "ball_l",
+   "type": "joint",
+   "translate": [
+    0,
+    -0.07,
+    0.15
+   ],
+   "parent": "foot_l"
+  },
+  {
+   "name": "thigh_r",
+   "type": "joint",
+   "translate": [
+    -0.1,
+    -0.05,
+    0
+   ],
+   "parent": "pelvis"
+  },
+  {
+   "name": "thigh_r_calf_r_geo",
+   "type": "mesh",
+   "parent": "thigh_r",
+   "primitive": "capsule",
+   "radius": 0.07,
+   "height": 0.5539999999999999,
+   "segments": 20,
+   "translate": [
+    0.0,
+    -0.235,
+    0.0
+   ],
+   "rotate": [
+    180.0,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "calf_r",
+   "type": "joint",
+   "translate": [
+    0,
+    -0.47,
+    0
+   ],
+   "parent": "thigh_r"
+  },
+  {
+   "name": "calf_r_foot_r_geo",
+   "type": "mesh",
+   "parent": "calf_r",
+   "primitive": "capsule",
+   "radius": 0.055,
+   "height": 0.496,
+   "segments": 20,
+   "translate": [
+    0.0,
+    -0.215,
+    0.0
+   ],
+   "rotate": [
+    180.0,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "foot_r",
+   "type": "joint",
+   "translate": [
+    0,
+    -0.43,
+    0
+   ],
+   "parent": "calf_r"
+  },
+  {
+   "name": "foot_r_ball_r_geo",
+   "type": "mesh",
+   "parent": "foot_r",
+   "primitive": "capsule",
+   "radius": 0.045,
+   "height": 0.21952945357246847,
+   "segments": 20,
+   "translate": [
+    0.0,
+    -0.035,
+    0.075
+   ],
+   "rotate": [
+    115.01689347810004,
+    -0.0,
+    0.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "ball_r",
+   "type": "joint",
+   "translate": [
+    0,
+    -0.07,
+    0.15
+   ],
+   "parent": "foot_r"
+  },
+  {
+   "name": "pelvis_geo",
+   "type": "mesh",
+   "parent": "pelvis",
+   "primitive": "capsule",
+   "radius": 0.1,
+   "height": 0.36,
+   "rotate": [
+    0,
+    0,
+    90
+   ],
+   "translate": [
+    0,
+    -0.02,
+    0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "chest_geo",
+   "type": "mesh",
+   "parent": "spine_03",
+   "primitive": "capsule",
+   "radius": 0.09,
+   "height": 0.36,
+   "rotate": [
+    0,
+    0,
+    90
+   ],
+   "translate": [
+    0,
+    0.1,
+    0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "head_geo",
+   "type": "mesh",
+   "parent": "head",
+   "primitive": "uv_sphere",
+   "radius": 0.11,
+   "translate": [
+    0,
+    0.1,
+    0.01
+   ],
+   "scale": [
+    0.9,
+    1.08,
+    1.0
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "hand_l_geo",
+   "type": "mesh",
+   "parent": "hand_l",
+   "primitive": "uv_sphere",
+   "radius": 0.05,
+   "translate": [
+    0.05,
+    0,
+    0
+   ],
+   "scale": [
+    1.4,
+    0.6,
+    1
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "hand_r_geo",
+   "type": "mesh",
+   "parent": "hand_r",
+   "primitive": "uv_sphere",
+   "radius": 0.05,
+   "translate": [
+    -0.05,
+    0,
+    0
+   ],
+   "scale": [
+    1.4,
+    0.6,
+    1
+   ],
+   "material": "mannequin"
+  },
+  {
+   "name": "foot_l_geo",
+   "type": "mesh",
+   "parent": "foot_l",
+   "primitive": "cube",
+   "size": 1,
+   "translate": [
+    0,
+    -0.055,
+    0.07
+   ],
+   "scale": [
+    0.09,
+    0.07,
+    0.24
+   ],
+   "bevel": 0.02,
+   "material": "mannequin"
+  },
+  {
+   "name": "foot_r_geo",
+   "type": "mesh",
+   "parent": "foot_r",
+   "primitive": "cube",
+   "size": 1,
+   "translate": [
+    0,
+    -0.055,
+    0.07
+   ],
+   "scale": [
+    0.09,
+    0.07,
+    0.24
+   ],
+   "bevel": 0.02,
+   "material": "mannequin"
+  }
+ ]
+}

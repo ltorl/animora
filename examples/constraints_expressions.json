@@ -1,0 +1,398 @@
+{
+  "comment": "Constraints & expressions: a cart follows a closed curve (path constraint, follow), the camera orbits via an expression while aiming at the cart, a spotlight tracks it, pillars are instances, a row of orbs uses an array modifier with expression-driven scale and colour.",
+  "settings": {
+    "resolution": [
+      1280,
+      720
+    ],
+    "fps": 24,
+    "frame_range": [
+      1,
+      120
+    ],
+    "samples": 64,
+    "output": "render/constraints/frame_####.png",
+    "video": "render/constraints.mp4",
+    "tonemap": "agx",
+    "motion_blur": true,
+    "clamp_indirect": 3
+  },
+  "environment": {
+    "type": "sky",
+    "sun_elevation": 25,
+    "sun_azimuth": 140,
+    "strength": 0.6
+  },
+  "nodes": [
+    {
+      "name": "cam",
+      "type": "camera",
+      "translate": "=[9*cos(tau*t/8), 4.5, 9*sin(tau*t/8)]",
+      "focal_length": 30,
+      "constraints": [
+        {
+          "type": "aim",
+          "target": "cart"
+        }
+      ],
+      "fstop": 4,
+      "focus_target": "cart"
+    },
+    {
+      "name": "floor",
+      "type": "mesh",
+      "primitive": "plane",
+      "size": 400,
+      "material": {
+        "preset": "concrete",
+        "base_color_map": {
+          "type": "grid",
+          "scale": 1,
+          "color1": [
+            0.55,
+            0.55,
+            0.57
+          ],
+          "color2": [
+            0.3,
+            0.3,
+            0.32
+          ]
+        }
+      }
+    },
+    {
+      "name": "track",
+      "type": "curve",
+      "points": [
+        [
+          4.0,
+          1.0,
+          0.0
+        ],
+        [
+          2.828,
+          1.6,
+          1.838
+        ],
+        [
+          0.0,
+          1.0,
+          2.6
+        ],
+        [
+          -2.828,
+          0.4,
+          1.838
+        ],
+        [
+          -4.0,
+          1.0,
+          0.0
+        ],
+        [
+          -2.828,
+          1.6,
+          -1.838
+        ],
+        [
+          -0.0,
+          1.0,
+          -2.6
+        ],
+        [
+          2.828,
+          0.4,
+          -1.838
+        ]
+      ],
+      "closed": true,
+      "radius": 0.06,
+      "samples": 24,
+      "material": {
+        "preset": "brushed_metal",
+        "base_color": [
+          0.8,
+          0.8,
+          0.82
+        ]
+      }
+    },
+    {
+      "name": "cart",
+      "type": "mesh",
+      "primitive": "cube",
+      "size": [
+        0.7,
+        0.35,
+        0.45
+      ],
+      "constraints": [
+        {
+          "type": "path",
+          "curve": "track",
+          "loop": true,
+          "follow": true,
+          "aim_axis": "x",
+          "offset": [
+            0,
+            0.22,
+            0
+          ],
+          "start_frame": 1,
+          "end_frame": 121
+        }
+      ],
+      "material": {
+        "preset": "car_paint",
+        "base_color": [
+          0.1,
+          0.35,
+          0.9
+        ]
+      }
+    },
+    {
+      "name": "headlight",
+      "type": "light",
+      "light": "spot",
+      "parent": "cart",
+      "translate": [
+        0.55,
+        0,
+        0
+      ],
+      "rotate": [
+        0,
+        -90,
+        0
+      ],
+      "intensity": 25,
+      "color": [
+        1,
+        0.9,
+        0.7
+      ],
+      "cone_angle": 35,
+      "radius": 0.04
+    },
+    {
+      "name": "tracker",
+      "type": "light",
+      "light": "spot",
+      "translate": [
+        0,
+        9,
+        0
+      ],
+      "intensity": 150,
+      "cone_angle": 24,
+      "constraints": [
+        {
+          "type": "aim",
+          "target": "cart"
+        }
+      ]
+    },
+    {
+      "name": "sun",
+      "type": "light",
+      "light": "sun",
+      "rotate": [
+        -50,
+        30,
+        0
+      ],
+      "intensity": 1.5
+    },
+    {
+      "name": "pillar",
+      "type": "mesh",
+      "primitive": "cylinder",
+      "radius": 0.08,
+      "height": 1.0,
+      "visible": false,
+      "material": {
+        "preset": "brushed_metal"
+      }
+    },
+    {
+      "name": "pillar_0",
+      "type": "instance",
+      "source": "pillar",
+      "translate": [
+        4.0,
+        0.5,
+        0.0
+      ],
+      "scale": [
+        1,
+        1.0,
+        1
+      ]
+    },
+    {
+      "name": "pillar_1",
+      "type": "instance",
+      "source": "pillar",
+      "translate": [
+        2.828,
+        0.8,
+        1.838
+      ],
+      "scale": [
+        1,
+        1.6,
+        1
+      ]
+    },
+    {
+      "name": "pillar_2",
+      "type": "instance",
+      "source": "pillar",
+      "translate": [
+        0.0,
+        0.5,
+        2.6
+      ],
+      "scale": [
+        1,
+        1.0,
+        1
+      ]
+    },
+    {
+      "name": "pillar_3",
+      "type": "instance",
+      "source": "pillar",
+      "translate": [
+        -2.828,
+        0.2,
+        1.838
+      ],
+      "scale": [
+        1,
+        0.4,
+        1
+      ]
+    },
+    {
+      "name": "pillar_4",
+      "type": "instance",
+      "source": "pillar",
+      "translate": [
+        -4.0,
+        0.5,
+        0.0
+      ],
+      "scale": [
+        1,
+        1.0,
+        1
+      ]
+    },
+    {
+      "name": "pillar_5",
+      "type": "instance",
+      "source": "pillar",
+      "translate": [
+        -2.828,
+        0.8,
+        -1.838
+      ],
+      "scale": [
+        1,
+        1.6,
+        1
+      ]
+    },
+    {
+      "name": "pillar_6",
+      "type": "instance",
+      "source": "pillar",
+      "translate": [
+        -0.0,
+        0.5,
+        -2.6
+      ],
+      "scale": [
+        1,
+        1.0,
+        1
+      ]
+    },
+    {
+      "name": "pillar_7",
+      "type": "instance",
+      "source": "pillar",
+      "translate": [
+        2.828,
+        0.2,
+        -1.838
+      ],
+      "scale": [
+        1,
+        0.4,
+        1
+      ]
+    },
+    {
+      "name": "orbs",
+      "type": "mesh",
+      "primitive": "ico_sphere",
+      "radius": 0.25,
+      "subdivisions": 3,
+      "translate": [
+        -3.5,
+        0.25,
+        -4.5
+      ],
+      "modifiers": [
+        {
+          "type": "array",
+          "count": 8,
+          "offset": [
+            1.0,
+            0,
+            0
+          ]
+        }
+      ],
+      "scale": "=[1, 1 + 0.5*abs(sin(tau*t)), 1]",
+      "material": {
+        "preset": "glossy_plastic",
+        "base_color": "=[0.5+0.5*sin(tau*t/4), 0.4, 0.5+0.5*cos(tau*t/4)]"
+      },
+      "pivot": [
+        0,
+        -0.25,
+        0
+      ]
+    },
+    {
+      "name": "beacon",
+      "type": "mesh",
+      "primitive": "sphere",
+      "radius": 0.2,
+      "translate": [
+        0,
+        2.6,
+        0
+      ],
+      "rotate": "=[0, frame*6, 0]",
+      "material": {
+        "preset": "emissive",
+        "emission": [
+          1,
+          0.3,
+          0.1
+        ],
+        "emission_strength": "=4 + 3*sin(tau*t*2)"
+      }
+    }
+  ],
+  "post": {
+    "bloom": 0.1,
+    "vignette": 0.2
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "comment": "Look-dev lineup: glass, gold, subsurface skin/wax, car paint, velvet, emission and a slow camera dolly with depth of field.",
+  "settings": {
+    "resolution": [1280, 720], "fps": 24, "frame_range": [1, 72], "samples": 256, "max_bounces": 12,
+    "output": "render/materials/frame_####.png", "video": "render/materials.mp4", "tonemap": "agx"
+  },
+  "environment": {"type": "studio", "strength": 1.0},
+  "post": {"bloom": 0.15, "vignette": 0.25},
+  "materials": {
+    "floor": {"preset": "studio_floor"},
+    "glass": {"preset": "glass"},
+    "gold": {"preset": "gold"},
+    "wax": {"preset": "wax"},
+    "carpaint": {"preset": "car_paint", "base_color": "#0b3d91"},
+    "velvet": {"preset": "velvet", "base_color": "#6a0f2a"},
+    "marble": {"preset": "marble"},
+    "neon": {"preset": "neon", "emission": "#29d3ff", "emission_strength": "=6 + 2*sin(t*tau)"}
+  },
+  "nodes": [
+    {"name": "camera", "type": "camera",
+     "translate": {"keys": [[1, [-1.5, 1.2, 7.5]], [72, [1.5, 1.0, 6.0], "ease_in_out"]]},
+     "look_at": [0, 0.6, 0], "focal_length": 50, "fstop": 2.8, "focus_target": "gold_ball"},
+    {"name": "key", "type": "light", "light": "area", "translate": [-3, 5, 3], "look_at": [0, 0.5, 0],
+     "size": 2.5, "intensity": 45},
+    {"name": "rim", "type": "light", "light": "area", "translate": [4, 3, -4], "look_at": [0, 0.7, 0],
+     "size": 2.0, "intensity": 35, "temperature": 8000},
+    {"name": "floor", "type": "mesh", "primitive": "plane", "size": 40, "material": "floor"},
+    {"name": "glass_ball", "type": "mesh", "primitive": "uv_sphere", "radius": 0.55, "segments": 64, "rings": 32,
+     "translate": [-2.4, 0.55, 0], "material": "glass"},
+    {"name": "gold_ball", "type": "mesh", "primitive": "uv_sphere", "radius": 0.55, "segments": 64, "rings": 32,
+     "translate": [-1.2, 0.55, 0.3], "material": "gold"},
+    {"name": "wax_torus", "type": "mesh", "primitive": "torus", "major_radius": 0.45, "minor_radius": 0.2,
+     "translate": [0, 0.65, 0], "rotate": [70, "=t*40", 0], "material": "wax",
+     "modifiers": [{"type": "subdivide", "levels": 1}]},
+    {"name": "paint_capsule", "type": "mesh", "primitive": "capsule", "radius": 0.35, "height": 1.2,
+     "translate": [1.2, 0.6, 0.3], "material": "carpaint"},
+    {"name": "velvet_cube", "type": "mesh", "primitive": "cube", "size": 0.8, "translate": [2.4, 0.4, 0],
+     "rotate": [0, 25, 0], "material": "velvet", "modifiers": [{"type": "subdivide", "levels": 2}]},
+    {"name": "marble_base", "type": "mesh", "primitive": "cylinder", "radius": 3.2, "height": 0.08,
+     "translate": [0, -0.03, 0], "material": "marble"},
+    {"name": "neon_ring", "type": "mesh", "primitive": "torus", "major_radius": 2.6, "minor_radius": 0.025,
+     "translate": [0, 1.6, -2.5], "rotate": [90, 0, 0], "material": "neon"}
+  ]
+}

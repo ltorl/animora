@@ -1,0 +1,60 @@
+{
+  "comment": "Procedural modelling: SDF CSG with smooth blends, metaballs, extruded 3-D text, sweep, loft and a volumetric boolean.",
+  "settings": {"resolution": [1280, 720], "fps": 24, "frame_range": [1, 48], "samples": 64,
+               "output": "render/modeling/frame_####.png", "video": "render/modeling.mp4"},
+  "environment": {"type": "sky", "sun_elevation": 35, "sun_azimuth": 140, "strength": 0.9},
+  "materials": {
+    "floor": {"base_color": "#d8d2c8", "roughness": 0.7},
+    "chrome": {"preset": "chrome"},
+    "clay": {"base_color": "#d9774a", "roughness": 0.45},
+    "jade": {"base_color": "#3fa37a", "roughness": 0.25, "clearcoat": 0.6},
+    "gold": {"preset": "gold"},
+    "blue": {"base_color": "#3a6fd8", "roughness": 0.35}
+  },
+  "nodes": [
+    {"name": "camera", "type": "camera", "translate": [0, 2.6, 8.5], "look_at": [0, 0.9, 0], "focal_length": 38},
+    {"name": "key", "type": "light", "light": "area", "translate": [-4, 6, 5], "look_at": [0, 0, 0], "size": 3, "intensity": 35},
+    {"name": "floor", "type": "mesh", "primitive": "plane", "size": 40, "material": "floor"},
+
+    {"name": "title", "type": "mesh", "primitive": "text", "text": "Animora", "size": 0.7, "depth": 0.25,
+     "bevel": 0.03, "translate": [0, 2.3, -1.5], "material": "gold"},
+
+    {"name": "csg", "type": "mesh", "primitive": "sdf", "resolution": 72, "translate": [-2.6, 0.7, 0], "material": "clay",
+     "rotate": [0, {"keys": [[1, 0], [48, 90]]}, 0],
+     "shapes": [
+       {"type": "box", "size": [1, 1, 1], "round": 0.04},
+       {"type": "sphere", "radius": 0.68, "op": "intersect"},
+       {"type": "cylinder", "radius": 0.28, "height": 2, "op": "subtract", "blend": 0.05},
+       {"type": "cylinder", "radius": 0.28, "height": 2, "op": "subtract", "blend": 0.05, "rotate": [90, 0, 0]},
+       {"type": "cylinder", "radius": 0.28, "height": 2, "op": "subtract", "blend": 0.05, "rotate": [0, 0, 90]}
+     ]},
+
+    {"name": "blobs", "type": "mesh", "primitive": "sdf", "resolution": 64, "translate": [-0.8, 0.75, 0.6], "material": "jade",
+     "shapes": [
+       {"type": "sphere", "radius": 0.45},
+       {"type": "sphere", "radius": 0.3, "blend": 0.3, "translate": [{"expr": "0.55*sin(t*tau/2)"}, 0.35, 0]},
+       {"type": "torus", "major_radius": 0.45, "minor_radius": 0.08, "blend": 0.15, "rotate": [70, 0, 0], "translate": [0, -0.2, 0]},
+       {"type": "sphere", "radius": 0.2, "op": "subtract", "blend": 0.1, "translate": [0, 0.1, 0.42]}
+     ]},
+
+    {"name": "twisted", "type": "mesh", "primitive": "sdf", "resolution": 64, "translate": [0.8, 0.8, 0.4], "material": "blue",
+     "shapes": [{"type": "box", "size": [0.5, 1.6, 0.5], "round": 0.03, "twist": 120, "displace": {"amplitude": 0.02, "frequency": 6}}]},
+
+    {"name": "knot", "type": "mesh", "primitive": "sweep", "profile": "star", "radius": 0.09, "segments": 10, "twist": 360,
+     "closed": true, "samples": 10, "material": "chrome", "translate": [2.6, 0.75, 0],
+     "path": [[0.6, 0, 0], [0, 0.55, 0.3], [-0.6, 0, 0], [0, -0.55, -0.3]]},
+
+    {"name": "vase", "type": "mesh", "primitive": "loft", "material": "clay", "translate": [2.3, 0, 1.6], "samples": 10,
+     "sections": [
+       {"profile": "circle", "radius": 0.25},
+       {"profile": "circle", "radius": 0.4, "translate": [0, 0.35, 0]},
+       {"profile": "star", "radius": 0.3, "segments": 24, "translate": [0, 0.8, 0], "rotate": [0, 20, 0]},
+       {"profile": "circle", "radius": 0.18, "translate": [0, 1.1, 0]}
+     ]},
+
+    {"name": "cutter", "type": "mesh", "primitive": "sphere", "radius": 0.55, "visible": false,
+     "translate": [{"expr": "-1.6 + 0.4*sin(t*tau/2)"}, 0.95, 1.9]},
+    {"name": "carved", "type": "mesh", "primitive": "cube", "size": 0.8, "translate": [-1.9, 0.4, 1.8], "material": "blue",
+     "modifiers": [{"type": "boolean", "object": "cutter", "op": "difference", "resolution": 64}]}
+  ]
+}

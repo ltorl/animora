@@ -1,0 +1,35 @@
+{
+  "comment": "Smoke rising past mesh colliders: a static torus and a teapot-like capsule sweeping through the plume (native solver, mesh SDF obstacles with moving-wall boundaries).",
+  "settings": {
+    "resolution": [960, 720],
+    "fps": 24,
+    "frame_range": [1, 72],
+    "samples": 64,
+    "output": "render/smoke_colliders/frame_####.png",
+    "video": "render/smoke_colliders.mp4"
+  },
+  "environment": {"type": "sky", "sun_elevation": 35, "sun_azimuth": 140, "strength": 0.7},
+  "materials": {
+    "floor": {"base_color": "#cfc9bf", "roughness": 0.7},
+    "ring": {"preset": "brushed_metal", "base_color": "#c9a45a"},
+    "paddle": {"preset": "glossy_plastic", "base_color": "#2f6fd6"}
+  },
+  "nodes": [
+    {"name": "camera", "type": "camera", "translate": [0, 2.4, 8.5], "look_at": [0, 2.0, 0], "focal_length": 38},
+    {"name": "key", "type": "light", "light": "area", "translate": [-4, 6, 4], "look_at": [0, 1.5, 0],
+     "size": 3, "intensity": 40},
+    {"name": "floor", "type": "mesh", "primitive": "plane", "size": 30, "material": "floor"},
+    {"name": "ring", "type": "mesh", "primitive": "torus", "major_radius": 0.6, "minor_radius": 0.16,
+     "translate": [0, 1.5, 0], "material": "ring"},
+    {"name": "paddle", "type": "mesh", "primitive": "capsule", "radius": 0.18, "height": 1.2,
+     "rotate": [0, 0, 90], "material": "paddle",
+     "translate": {"keys": [[1, [-2.2, 2.9, 0]], [72, [2.2, 2.9, 0]]], "interp": "linear"}},
+    {"name": "smoke", "type": "volume", "size": [4, 5, 3], "translate": [0, 2.5, 0],
+     "density": 6, "albedo": 0.8,
+     "smoke": {"resolution": 64, "buoyancy": 6, "cooling": 0.8, "dissipation": 0.15,
+               "vorticity": 1.5, "turbulence": 0.6,
+               "colliders": ["ring", "paddle"],
+               "sources": [{"shape": "sphere", "center": [0, -2.1, 0], "radius": 0.35,
+                            "density": 1.5, "heat": 1, "velocity": [0, 1.2, 0], "noise": 0.3}]}}
+  ]
+}

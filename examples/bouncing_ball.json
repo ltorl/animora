@@ -1,0 +1,234 @@
+{
+  "comment": "Classic animation exercise: a bouncing ball with squash & stretch, eased keyframes and motion blur.",
+  "settings": {
+    "resolution": [
+      1280,
+      720
+    ],
+    "fps": 24,
+    "frame_range": [
+      1,
+      48
+    ],
+    "samples": 96,
+    "motion_blur": true,
+    "shutter": 0.5,
+    "output": "render/bouncing_ball/frame_####.png",
+    "video": "render/bouncing_ball.mp4"
+  },
+  "environment": {
+    "type": "sky",
+    "sun_elevation": 40,
+    "sun_azimuth": 210,
+    "strength": 0.8
+  },
+  "variables": {
+    "hop": 24
+  },
+  "materials": {
+    "floor": {
+      "base_color": "#d9d4cc",
+      "roughness": 0.6,
+      "base_color_map": {
+        "type": "checker",
+        "scale": 24,
+        "color1": "#dcd6cc",
+        "color2": "#bdb6aa"
+      }
+    },
+    "ball": {
+      "preset": "glossy_plastic",
+      "base_color": "#e8452c"
+    }
+  },
+  "nodes": [
+    {
+      "name": "camera",
+      "type": "camera",
+      "translate": [
+        0.5,
+        1.6,
+        9
+      ],
+      "look_at": [
+        0.5,
+        1.0,
+        0
+      ],
+      "focal_length": 35
+    },
+    {
+      "name": "key",
+      "type": "light",
+      "light": "area",
+      "translate": [
+        -4,
+        6,
+        4
+      ],
+      "look_at": [
+        0,
+        0,
+        0
+      ],
+      "size": 3,
+      "intensity": 40,
+      "temperature": 5600
+    },
+    {
+      "name": "floor",
+      "type": "mesh",
+      "primitive": "plane",
+      "size": 40,
+      "material": "floor"
+    },
+    {
+      "name": "ball_mover",
+      "type": "group",
+      "translate": {
+        "keys": [
+          [
+            1,
+            [
+              -3.5,
+              0,
+              0
+            ]
+          ],
+          [
+            48,
+            [
+              4.5,
+              0,
+              0
+            ]
+          ]
+        ],
+        "interp": "linear"
+      },
+      "children": [
+        {
+          "name": "ball_hop",
+          "type": "group",
+          "translate": {
+            "keys": [
+              [
+                1,
+                [
+                  0,
+                  0,
+                  0
+                ],
+                "quad_out"
+              ],
+              [
+                13,
+                [
+                  0,
+                  2.4,
+                  0
+                ],
+                "quad_in"
+              ],
+              [
+                25,
+                [
+                  0,
+                  0,
+                  0
+                ]
+              ]
+            ],
+            "post": "cycle"
+          },
+          "children": [
+            {
+              "name": "ball_squash",
+              "type": "group",
+              "pivot": [
+                0,
+                -0.5,
+                0
+              ],
+              "translate": [
+                0,
+                0.5,
+                0
+              ],
+              "scale": {
+                "keys": [
+                  [
+                    1,
+                    [
+                      1.25,
+                      0.75,
+                      1.25
+                    ],
+                    "sine_out"
+                  ],
+                  [
+                    3,
+                    [
+                      0.9,
+                      1.15,
+                      0.9
+                    ]
+                  ],
+                  [
+                    7,
+                    [
+                      1,
+                      1,
+                      1
+                    ]
+                  ],
+                  [
+                    21,
+                    [
+                      1,
+                      1,
+                      1
+                    ]
+                  ],
+                  [
+                    24,
+                    [
+                      0.9,
+                      1.15,
+                      0.9
+                    ]
+                  ],
+                  [
+                    25,
+                    [
+                      1.25,
+                      0.75,
+                      1.25
+                    ]
+                  ]
+                ],
+                "post": "cycle"
+              },
+              "children": [
+                {
+                  "name": "ball",
+                  "type": "mesh",
+                  "primitive": "uv_sphere",
+                  "radius": 0.5,
+                  "segments": 48,
+                  "rings": 24,
+                  "material": "ball",
+                  "rotate": [
+                    0,
+                    0,
+                    "=-(frame-1)*9"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
